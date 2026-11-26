@@ -234,8 +234,290 @@ static void shell(void)
     }
 }
 
+
+static void puthex(u32 v);
+
+static inline void outw(u16 port, u16 val)
+{
+    __asm__ volatile("outw %0, %1" : : "a"(val), "Nd"(port));
+}
+
+static inline void outl(u16 port, u32 val)
+{
+    __asm__ volatile("outl %0, %1" : : "a"(val), "Nd"(port));
+}
+
+static inline u32 inl(u16 port)
+{
+    u32 r;
+    __asm__ volatile("inl %1, %0" : "=a"(r) : "Nd"(port));
+    return r;
+}
+
+static inline u16 inw(u16 port)
+{
+    u16 r;
+    __asm__ volatile("inw %1, %0" : "=a"(r) : "Nd"(port));
+    return r;
+}
+
+#define VBE_IDX 0x1CE
+#define VBE_DAT 0x1CF
+
+static void vbe_w(u16 idx, u16 val)
+{
+    outw(VBE_IDX, idx);
+    outw(VBE_DAT, val);
+}
+
+static u16 vbe_r(u16 idx)
+{
+    outw(VBE_IDX, idx);
+    return inw(VBE_DAT);
+}
+
+static u32 *fb;
+static u32 fb_w, fb_h, fb_pitch;
+static u32 fb_addr;
+
+static u32 pci_read32(u8 bus, u8 dev, u8 fn, u8 off)
+{
+    outl(0xCF8, 0x80000000u | ((u32)bus << 16) | ((u32)dev << 11) |
+                     ((u32)fn << 8) | (off & 0xFC));
+    return inl(0xCFC);
+}
+
+static void pci_write32(u8 bus, u8 dev, u8 fn, u8 off, u32 val)
+{
+    outl(0xCF8, 0x80000000u | ((u32)bus << 16) | ((u32)dev << 11) |
+                     ((u32)fn << 8) | (off & 0xFC));
+    outl(0xCFC, val);
+}
+
+static u32 pci_find_vga_lfb(void)
+{
+    u8 dev;
+    for (dev = 0; dev < 32; dev++) {
+        u32 id = pci_read32(0, dev, 0, 0x00);
+        u16 vendor = (u16)(id & 0xFFFF);
+        u16 device = (u16)(id >> 16);
+        if (vendor == 0x1234 && (device == 0x1111 || device == 0x1112)) {
+            u32 cmd = pci_read32(0, dev, 0, 0x04);
+            pci_write32(0, dev, 0, 0x04, cmd | 0x2 | 0x4);
+            return pci_read32(0, dev, 0, 0x10) & 0xFFFFFFF0u;
+        }
+    }
+    return 0;
+}
+
+static int gfx_init(void)
+{
+    u32 bar;
+    u16 id = vbe_r(0);
+    if ((id & 0xFFF0) != 0xB0C0)
+        return 0;
+    bar = pci_find_vga_lfb();
+    puts("VGA BAR0: ");
+    puthex(bar);
+    putc('\n');
+    if (!bar)
+        bar = 0xE0000000u;
+    vbe_w(4, 0);
+    vbe_w(1, 1024);
+    vbe_w(2, 768);
+    vbe_w(3, 32);
+    vbe_w(4, 0x41);
+    fb = (u32 *)bar;
+    fb_addr = bar;
+    fb_w = 1024;
+    fb_h = 768;
+    fb_pitch = 1024 * 4;
+    return 1;
+}
+
+static void px(u32 x, u32 y, u32 c)
+{
+    if (x < fb_w && y < fb_h)
+        fb[(y * fb_pitch + x * 4) / 4] = c;
+}
+
+static void rect(u32 x, u32 y, u32 w, u32 h, u32 c)
+{
+    u32 i, j;
+    for (j = 0; j < h; j++)
+        for (i = 0; i < w; i++)
+            px(x + i, y + j, c);
+}
+
+static void frame(u32 x, u32 y, u32 w, u32 h, u32 c, u32 t)
+{
+    rect(x, y, w, t, c);
+    rect(x, y + h - t, w, t, c);
+    rect(x, y, t, h, c);
+    rect(x + w - t, y, t, h, c);
+}
+
+static void desktop(void)
+{
+    u32 x, y;
+    for (y = 0; y < fb_h; y++) {
+        u32 k = y * 255 / fb_h;
+        u32 c = 0x000000 | ((8 + k / 6) << 16) | ((12 + k / 4) << 8) | (24 + k / 3);
+        for (x = 0; x < fb_w; x++)
+            px(x, y, c);
+    }
+    rect(0, 0, fb_w, 36, 0x141C26);
+    rect(0, 36, fb_w, 1, 0x2A3A4A);
+    rect(16, 8, 20, 20, 0x22D3EE);
+    rect(46, 8, 20, 20, 0x4ADE80);
+    rect(fb_w - 150, 8, 130, 20, 0x1E2A36);
+
+    rect(160, 130, 560, 380, 0x0E141B);
+    frame(160, 130, 560, 380, 0x2A3A4A, 2);
+    rect(160, 130, 560, 34, 0x2563EB);
+    rect(672, 138, 12, 12, 0xF87171);
+    rect(690, 138, 12, 12, 0xFBBF24);
+    rect(708, 138, 12, 12, 0x4ADE80);
+
+    rect(180, 190, 520, 14, 0x1F2A37);
+    rect(180, 216, 300, 10, 0x18222E);
+    rect(180, 240, 420, 10, 0x18222E);
+    rect(180, 264, 360, 10, 0x18222E);
+    rect(180, 300, 240, 28, 0x2563EB);
+    rect(180, 350, 200, 120, 0x101820);
+    frame(180, 350, 200, 120, 0x2A3A4A, 1);
+    rect(400, 350, 300, 120, 0x101820);
+    frame(400, 350, 300, 120, 0x2A3A4A, 1);
+}
+
+static const unsigned char cursor_bmp[19][12] = {
+    {1,0,0,0,0,0,0,0,0,0,0,0},
+    {1,1,0,0,0,0,0,0,0,0,0,0},
+    {1,0,1,0,0,0,0,0,0,0,0,0},
+    {1,0,0,1,0,0,0,0,0,0,0,0},
+    {1,0,0,0,1,0,0,0,0,0,0,0},
+    {1,0,0,0,0,1,0,0,0,0,0,0},
+    {1,0,0,0,0,0,1,0,0,0,0,0},
+    {1,0,0,0,0,0,0,1,0,0,0,0},
+    {1,0,0,0,0,0,0,0,1,0,0,0},
+    {1,0,0,0,0,0,0,0,0,1,0,0},
+    {1,0,0,0,0,0,0,0,0,0,1,0},
+    {1,0,0,0,0,0,1,1,1,1,1,0},
+    {1,0,0,0,1,0,1,0,0,0,0,0},
+    {1,0,0,1,0,1,0,1,0,0,0,0},
+    {1,0,1,0,0,1,0,1,0,0,0,0},
+    {1,1,0,0,0,0,1,0,1,0,0,0},
+    {1,0,0,0,0,0,1,0,1,0,0,0},
+    {0,0,0,0,0,0,0,1,0,1,0,0},
+    {0,0,0,0,0,0,0,1,0,1,0,0}
+};
+
+static u32 cur_x = 500, cur_y = 400;
+
+static void draw_cursor(void)
+{
+    u32 j, i;
+    for (j = 0; j < 19; j++) {
+        for (i = 0; i < 12; i++) {
+            if (!cursor_bmp[j][i])
+                continue;
+            px(cur_x + i - 1, cur_y + j - 1, 0x000000);
+            px(cur_x + i, cur_y + j, 0xFFFFFF);
+        }
+    }
+}
+
+static u8 kbd_scancode(void)
+{
+    while (!(inb(0x64) & 1))
+        ;
+    return inb(0x60);
+}
+
+static void gui_run(void)
+{
+    int e0 = 0;
+    puts("GUI: Bochs VBE 1024x768x32, LFB ");
+    puthex(fb_addr);
+    putc('\n');
+    desktop();
+    draw_cursor();
+    for (;;) {
+        u8 sc = kbd_scancode();
+        if (sc == 0xE0) {
+            e0 = 1;
+            continue;
+        }
+        if (sc & 0x80) {
+            e0 = 0;
+            continue;
+        }
+        u32 nx = cur_x, ny = cur_y;
+        if (e0 && sc == 0x4B) nx -= 8;
+        else if (e0 && sc == 0x4D) nx += 8;
+        else if (e0 && sc == 0x48) ny -= 8;
+        else if (e0 && sc == 0x50) ny += 8;
+        else if (!e0 && sc == 0x01) {
+            puts("GUI: Esc, halted\n");
+            for (;;) __asm__ volatile("cli; hlt");
+        }
+        e0 = 0;
+        if (nx != cur_x || ny != cur_y) {
+            rect(cur_x, cur_y, 12, 19, 0);
+            cur_x = nx;
+            cur_y = ny;
+            desktop();
+            draw_cursor();
+        }
+    }
+}
+
+extern u32 mb_magic;
+extern u32 mb_info;
+
+static void puthex(u32 v)
+{
+    static const char h[] = "0123456789ABCDEF";
+    int i;
+    puts("0x");
+    for (i = 28; i >= 0; i -= 4)
+        putc(h[(v >> i) & 15]);
+}
+
 void kmain(void)
 {
+    serial_init();
+    puts("MB magic: ");
+    puthex(mb_magic);
+    putc('\n');
+    if (mb_magic == 0x2BADB002 && mb_info) {
+        volatile u32 *mbi = (volatile u32 *)mb_info;
+        u32 flags = mbi[0];
+        puts("MB flags: ");
+        puthex(flags);
+        putc('\n');
+        if (flags & 0x1000) {
+            u32 pitch = *(volatile u32 *)(mb_info + 96);
+            u32 w = *(volatile u32 *)(mb_info + 100);
+            u32 h = *(volatile u32 *)(mb_info + 104);
+            u32 bpp = *(volatile u32 *)(mb_info + 108);
+            u32 addr_lo = *(volatile u32 *)(mb_info + 88);
+            puts("FB addr: ");
+            puthex(addr_lo);
+            puts(" pitch: ");
+            putu(pitch);
+            puts(" size: ");
+            putu(w);
+            putc('x');
+            putu(h);
+            puts(" bpp: ");
+            putu(bpp);
+            putc('\n');
+        } else {
+            puts("FB: no video mode\n");
+        }
+    }
+
     serial_init();
     vga_clear();
 
@@ -245,6 +527,10 @@ void kmain(void)
     puts("  x86, Multiboot, no Linux\n\n");
     puts("Type help for a list of commands.\n\n");
     prompt();
+
+    if (gfx_init()) {
+        gui_run();
+    }
 
     shell();
 }
