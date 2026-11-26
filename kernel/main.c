@@ -195,7 +195,7 @@ static void run_command(const char *cmd)
     } else if (streq(cmd, "about")) {
         puts("KotOS is a hobby OS with its own kernel, no Linux.\n");
     } else if (streq(cmd, "version")) {
-        puts("KotOS native kernel 0.3 (x86, Multiboot)\n");
+        puts("KotOS native kernel 1.0 (x86, Multiboot)\n");
     } else if (streq(cmd, "clear")) {
         vga_clear();
     } else if (streq(cmd, "reboot")) {
@@ -522,7 +522,7 @@ void kmain(void)
     vga_clear();
 
     vga_set_attr(0x0B);
-    puts("  KotOS v0.3 - native kernel\n");
+    puts("  KotOS v1.0 - native kernel\n");
     vga_set_attr(0x07);
     puts("  x86, Multiboot, no Linux\n\n");
     puts("Type help for a list of commands.\n\n");
