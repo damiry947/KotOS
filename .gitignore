@@ -1,0 +1,20 @@
+# артефакты сборки ядра
+kernel/*.o
+kernel/kernel.elf
+
+# Linux-ветка и её артефакты (в репозиторий не входят)
+src/
+rootfs/
+*.tar.*
+*.cpio.gz
+bzImage*
+
+# служебные файлы
+*.log
+*.ppm
+*.bak
+progress.py
+build_total*
+kbuild*
+qemu.log
+serial*.log
