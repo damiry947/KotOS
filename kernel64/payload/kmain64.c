@@ -12,8 +12,7 @@ static inline void outl(u16 p, u32 v) { __asm__ volatile("outl %0, %1" : : "a"(v
 static inline u32 inl(u16 p) { u32 r; __asm__ volatile("inl %1, %0" : "=a"(r) : "Nd"(p)); return r; }
 
 static u32 *fb;
-static u32 fw, fh, pitch;
-static u32 cx, cy;
+static u32 fw, fh, pitch, cx, cy;
 static u32 fg = 0xE6EDF3, bg = 0x0B0F14;
 
 static void serial_init(void)
@@ -35,13 +34,11 @@ static void pci_check(void)
     u8 dev;
     for (dev = 0; dev < 32; dev++) {
         u32 id;
-        outl(0xCF8, 0x80000000u | ((u32)dev << 11) | 0x00);
+        outl(0xCF8, 0x80000000u | ((u32)dev << 11));
         id = inl(0xCFC);
         if ((id & 0xFFFF) == 0x1234 && (id >> 16) == 0x1111) {
-            u32 cmd;
             outl(0xCF8, 0x80000000u | ((u32)dev << 11) | 0x04);
-            cmd = inl(0xCFC) | 0x2 | 0x4;
-            outl(0xCFC, cmd);
+            outl(0xCFC, inl(0xCFC) | 0x2 | 0x4);
             outl(0xCF8, 0x80000000u | ((u32)dev << 11) | 0x10);
             fb = (u32 *)(inl(0xCFC) & 0xFFFFFFF0u);
             return;
@@ -67,9 +64,7 @@ static int fb_init(void)
     vbe_w(2, 768);
     vbe_w(3, 32);
     vbe_w(4, 0x41);
-    fw = 1024;
-    fh = 768;
-    pitch = 1024 * 4;
+    fw = 1024; fh = 768; pitch = 4096;
     return 1;
 }
 
@@ -107,12 +102,30 @@ static u8 cp866(u32 cp)
     return '?';
 }
 
+static void scroll(void)
+{
+    u32 y, i, words = pitch / 4;
+    for (y = 16; y < fh; y++) {
+        u32 *src = (u32 *)((u8 *)fb + y * pitch);
+        u32 *dst = (u32 *)((u8 *)fb + (y - 16) * pitch);
+        for (i = 0; i < words; i++)
+            dst[i] = src[i];
+    }
+    rect(0, fh - 16, fw, 16, bg);
+}
+
 static void putc_c(u8 c)
 {
-    if (c == '\n') { cx = 0; cy++; return; }
-    glyph(cx * 8, cy * 16, c);
-    cx++;
-    if (cx >= fw / 8) { cx = 0; cy++; }
+    if (c == '\n') { cx = 0; cy++; }
+    else if (c == '\b') {
+        if (cx) { cx--; glyph(cx * 8, cy * 16, ' '); }
+        return;
+    } else {
+        glyph(cx * 8, cy * 16, c);
+        cx++;
+        if (cx >= fw / 8) { cx = 0; cy++; }
+    }
+    if (cy >= fh / 16) { scroll(); cy = fh / 16 - 1; }
 }
 
 static void puts_c(const char *s)
@@ -128,21 +141,282 @@ static void puts_c(const char *s)
     }
 }
 
+static int streq(const char *a, const char *b)
+{
+    while (*a && *a == *b) { a++; b++; }
+    return *a == *b;
+}
+
+static void clear_screen(void)
+{
+    rect(0, 0, fw, fh, bg);
+    cx = 0; cy = 0;
+}
+
+static int kbd_poll(void)
+{
+    static const char kmap[128] = {
+        0, 27, '1', '2', '3', '4', '5', '6', '7', '8', '9', '0', '-', '=', '\b',
+        '\t', 'q', 'w', 'e', 'r', 't', 'y', 'u', 'i', 'o', 'p', '[', ']', '\n',
+        0, 'a', 's', 'd', 'f', 'g', 'h', 'j', 'k', 'l', ';', '\'', '`',
+        0, '\\', 'z', 'x', 'c', 'v', 'b', 'n', 'm', ',', '.', '/', 0,
+        '*', 0, ' '
+    };
+    static const char kmap_s[128] = {
+        0, 27, '!', '@', '#', '$', '%', '^', '&', '*', '(', ')', '_', '+', '\b',
+        '\t', 'Q', 'W', 'E', 'R', 'T', 'Y', 'U', 'I', 'O', 'P', '{', '}', '\n',
+        0, 'A', 'S', 'D', 'F', 'G', 'H', 'J', 'K', 'L', ':', '"', '~',
+        0, '|', 'Z', 'X', 'C', 'V', 'B', 'N', 'M', '<', '>', '?', 0,
+        '*', 0, ' '
+    };
+    static int shift;
+    u8 sc;
+    char c;
+    if (!(inb(0x64) & 1))
+        return -1;
+    sc = inb(0x60);
+    if (sc == 0x2A || sc == 0x36) { shift = 1; return -1; }
+    if (sc == 0xAA || sc == 0xB6) { shift = 0; return -1; }
+    if (sc & 0x80)
+        return -1;
+    c = shift ? kmap_s[sc] : kmap[sc];
+    return c ? (int)(u8)c : -1;
+}
+
+
+#define FS_MAX 16
+#define FS_NAME 24
+#define FS_DATA 256
+
+static struct {
+    char name[FS_NAME];
+    char data[FS_DATA];
+    u32 size;
+    int used;
+} fs[FS_MAX];
+
+static void str_copy(char *d, const char *s, int max)
+{
+    int i = 0;
+    while (s[i] && i < max - 1) { d[i] = s[i]; i++; }
+    d[i] = 0;
+}
+
+static void fs_init(void)
+{
+    int i;
+    for (i = 0; i < FS_MAX; i++)
+        fs[i].used = 0;
+}
+
+static int fs_find(const char *name)
+{
+    int i;
+    for (i = 1; i < FS_MAX; i++)
+        if (fs[i].used && streq(fs[i].name, name))
+            return i;
+    return -1;
+}
+
+static int fs_create(const char *name)
+{
+    int i;
+    if (!*name || fs_find(name) >= 0)
+        return -1;
+    for (i = 1; i < FS_MAX; i++) {
+        if (!fs[i].used) {
+            fs[i].used = 1;
+            fs[i].size = 0;
+            fs[i].data[0] = 0;
+            str_copy(fs[i].name, name, FS_NAME);
+            return i;
+        }
+    }
+    return -1;
+}
+
+static void fs_look(void)
+{
+    int i, n = 0;
+    for (i = 1; i < FS_MAX; i++) {
+        if (fs[i].used) {
+            puts_c(fs[i].name);
+            puts_c("  ");
+            n++;
+        }
+    }
+    if (!n)
+        puts_c("(пусто)");
+    putc_c('\n');
+    sport('\n');
+}
+
+static void fs_show(const char *name)
+{
+    int i = fs_find(name);
+    if (i < 0) {
+        puts_c("show: нет файла\n");
+        return;
+    }
+    puts_c(fs[i].data);
+    putc_c('\n');
+    sport('\n');
+}
+
+static void fs_write(const char *name, const char *text, int append)
+{
+    int i = fs_find(name);
+    u32 pos;
+    if (i < 0)
+        i = fs_create(name);
+    if (i < 0) {
+        puts_c("say: не создать файл\n");
+        return;
+    }
+    pos = append ? fs[i].size : 0;
+    if (append && pos && fs[i].data[pos - 1] != '\n' && pos < FS_DATA - 1)
+        fs[i].data[pos++] = '\n';
+    while (*text && pos < FS_DATA - 1)
+        fs[i].data[pos++] = *text++;
+    fs[i].data[pos] = 0;
+    fs[i].size = pos;
+}
+
+static void fs_del(const char *name)
+{
+    int i = fs_find(name);
+    if (i < 0) {
+        puts_c("del: нет файла\n");
+        return;
+    }
+    fs[i].used = 0;
+}
+
+static int next_tok(const char **pp, char *out, int max)
+{
+    const char *p = *pp;
+    int n = 0;
+    while (*p == ' ') p++;
+    if (!*p) { out[0] = 0; return 0; }
+    while (*p && *p != ' ' && n < max - 1)
+        out[n++] = *p++;
+    out[n] = 0;
+    *pp = p;
+    return 1;
+}
+
+static void run_cmd(const char *s)
+{
+    char v[16], a[FS_NAME];
+    const char *p = s;
+    int have = next_tok(&p, v, 16);
+
+    if (!have)
+        return;
+    if (streq(v, "help")) {
+        puts_c("Команды: help, about, clear, look, newfile, show, del,\n");
+        puts_c("         say <текст> > <файл>, say <текст> >> <файл>\n");
+    } else if (streq(v, "about")) {
+        puts_c("KotOS x64 — 64-битное ядро, C payload + RAMFS.\n");
+    } else if (streq(v, "clear")) {
+        clear_screen();
+    } else if (streq(v, "look")) {
+        fs_look();
+    } else if (streq(v, "newfile")) {
+        if (!next_tok(&p, a, FS_NAME) || fs_create(a) < 0)
+            puts_c("newfile: не создать\n");
+    } else if (streq(v, "show")) {
+        if (!next_tok(&p, a, FS_NAME))
+            puts_c("show: нужно имя\n");
+        else
+            fs_show(a);
+    } else if (streq(v, "del")) {
+        if (!next_tok(&p, a, FS_NAME))
+            puts_c("del: нужно имя\n");
+        else
+            fs_del(a);
+    } else if (streq(v, "say") || streq(v, "echo")) {
+        const char *gt = p;
+        int append = 0;
+        while (*gt) {
+            if (gt[0] == '>' && gt[1] == '>') { append = 1; break; }
+            if (gt[0] == '>') break;
+            gt++;
+        }
+        if (*gt == '>') {
+            char text[FS_DATA], fname[FS_NAME];
+            int t = 0, f = 0;
+            const char *q = p;
+            while (q < gt) {
+                if (!(*q == ' ' && t == 0) && t < FS_DATA - 1)
+                    text[t++] = *q;
+                q++;
+            }
+            while (t > 0 && text[t - 1] == ' ')
+                t--;
+            text[t] = 0;
+            q = gt + (append ? 2 : 1);
+            while (*q == ' ') q++;
+            while (*q && *q != ' ' && f < FS_NAME - 1)
+                fname[f++] = *q++;
+            fname[f] = 0;
+            if (!f)
+                puts_c("say: нужно имя файла\n");
+            else
+                fs_write(fname, text, append);
+        } else {
+            while (*p == ' ') p++;
+            puts_c(p);
+            putc_c('\n');
+            sport('\n');
+        }
+    } else {
+        puts_c("Неизвестно: ");
+        puts_c(v);
+        putc_c('\n');
+        sport('\n');
+    }
+}
+
 void kmain64(void)
 {
+    char line[64];
+    int n = 0;
+    int c;
+
     serial_init();
-    if (fb_init()) {
-        rect(0, 0, fw, fh, bg);
-        cx = 4; cy = 2;
-        puts_c("KotOS x64\n");
-        puts_c("Framebuffer console works\n");
-        puts_c("Консоль x64 работает\n");
-        puts_c("C payload, long mode, CP866\n");
-    } else {
+    fs_init();
+    if (!fb_init()) {
         puts_c("KotOS x64: VBE unavailable\n");
+        for (;;) __asm__ volatile("hlt");
     }
-    for (;;)
-        __asm__ volatile("hlt");
+    clear_screen();
+    cx = 4; cy = 2;
+    puts_c("KotOS x64\n");
+    puts_c("Framebuffer console works\n");
+    puts_c("Консоль x64 работает\n\n");
+    puts_c("Введите help.\n\n");
+    puts_c("x64> ");
+
+    for (;;) {
+        c = kbd_poll();
+        if (c < 0)
+            continue;
+        if (c == '\n') {
+            putc_c('\n');
+            sport('\n');
+            line[n] = 0;
+            run_cmd(line);
+            n = 0;
+            puts_c("x64> ");
+        } else if (c == '\b') {
+            if (n) { n--; putc_c('\b'); sport('\b'); }
+        } else if (c >= 32 && c < 127 && n < 63) {
+            line[n++] = (char)c;
+            putc_c((u8)c);
+            sport((char)c);
+        }
+    }
 }
 
 __attribute__((section(".text.entry"), noreturn))
