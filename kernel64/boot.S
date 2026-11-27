@@ -14,6 +14,9 @@ idt:
 .skip 4096
 idt_ptr:
 .skip 16
+.align 16
+tss:
+.skip 104
 .align 4096
 pml4:
 .skip 4096
@@ -38,6 +41,10 @@ gdt64:
 .quad 0
 .quad 0x00AF9A000000FFFF
 .quad 0x00CF92000000FFFF
+.quad 0x00CFF2000000FFFF
+.quad 0x00AFFA000000FFFF
+.quad 0
+.quad 0
 gdt64_end:
 gdt64_ptr:
 .word gdt64_end - gdt64 - 1
@@ -59,6 +66,16 @@ dot:
 .asciz "."
 msg_pit:
 .asciz "\r\nPIT OK, interrupts work\r\n"
+msg_sys:
+.asciz "ring3: int 0x80 works\r\n"
+.align 8
+user_stub:
+.code64
+    mov $1, %eax
+    int $0x80
+1:  jmp 1b
+user_stub_end:
+.code32
 
 .section .text
 .code32
@@ -74,20 +91,20 @@ _start:
     rep stosl
 
     mov $pdpt, %eax
-    or $3, %eax
+    or $7, %eax
     mov %eax, pml4
 
     mov $pd0, %eax
-    or $3, %eax
+    or $7, %eax
     mov %eax, pdpt
     mov $pd1, %eax
-    or $3, %eax
+    or $7, %eax
     mov %eax, pdpt + 8
     mov $pd2, %eax
-    or $3, %eax
+    or $7, %eax
     mov %eax, pdpt + 16
     mov $pd3, %eax
-    or $3, %eax
+    or $7, %eax
     mov %eax, pdpt + 24
 
     mov $pd0, %edi
@@ -181,9 +198,16 @@ long_mode:
 
     call irq_setup
     sti
-4:
+wait_ticks:
+    cmpl $5, ticks(%rip)
+    jae go_ring3
     hlt
-    jmp 4b
+    jmp wait_ticks
+go_ring3:
+    cli
+    call ring3_setup
+    hlt
+    jmp .
 
 irq_setup:
     lea idt + 0x200(%rip), %rdi
@@ -249,12 +273,9 @@ irq0:
     inc %eax
     movl %eax, ticks(%rip)
     cmp $5, %eax
-    jb 6f
+    jne 6f
     lea msg_pit(%rip), %rsi
     call puts64
-7:
-    hlt
-    jmp 7b
 6:
     movb $0x20, %al
     movw $0x20, %dx
@@ -287,3 +308,68 @@ isr_default:
     call puts64
     hlt
     jmp isr_default
+
+ring3_setup:
+    lea gdt64(%rip), %rdi
+    add $0x28, %rdi
+    lea tss(%rip), %rax
+    movw $103, 0(%rdi)
+    mov %ax, %dx
+    mov %dx, 2(%rdi)
+    shr $16, %eax
+    movb %al, 4(%rdi)
+    movb $0x89, 5(%rdi)
+    movb $0, 6(%rdi)
+    shr $8, %eax
+    movb %al, 7(%rdi)
+    movl $0, 8(%rdi)
+    movl $0, 12(%rdi)
+
+    lea tss(%rip), %rdi
+    movq $0, 0(%rdi)
+    lea stack_top(%rip), %rax
+    mov %rax, 4(%rdi)
+    movw $104, 102(%rdi)
+    movw $0x28, %ax
+    ltr %ax
+
+    lea idt + 0x800(%rip), %rdi
+    lea int80(%rip), %rax
+    mov %eax, %edx
+    mov %dx, 0(%rdi)
+    movw $0x08, 2(%rdi)
+    movb $0, 4(%rdi)
+    movb $0xEE, 5(%rdi)
+    shr $16, %edx
+    mov %dx, 6(%rdi)
+    movl $0, 8(%rdi)
+    movl $0, 12(%rdi)
+
+    lea pd0(%rip), %rdi
+    movl $0x400000, %eax
+    or $0x87, %eax
+    mov %eax, 16(%rdi)
+    movl $0, 20(%rdi)
+
+    lea user_stub(%rip), %rsi
+    movl $0x400000, %edi
+    movl $(user_stub_end - user_stub), %ecx
+    rep movsb
+
+    movl $0x5FF000, %eax
+    pushq $0x1B
+    pushq %rax
+    pushq $0x002
+    pushq $0x23
+    pushq $0x400000
+    iretq
+
+int80:
+    push %rax
+    push %rdx
+    push %rsi
+    lea msg_sys(%rip), %rsi
+    call puts64
+8:
+    hlt
+    jmp 8b
