@@ -235,8 +235,29 @@ static void cputs(u8 attr, const char *s)
     puts(s);
 }
 
+static void msleep(u32 ms)
+{
+    volatile u32 i;
+    while (ms--)
+        for (i = 0; i < 200000; i++)
+            ;
+}
+
+static void beep(u32 hz, u32 ms)
+{
+    u32 d = 1193180 / hz;
+    outb(0x43, 0xB6);
+    outb(0x42, d & 0xFF);
+    outb(0x42, (d >> 8) & 0xFF);
+    outb(0x61, inb(0x61) | 3);
+    msleep(ms);
+    outb(0x61, inb(0x61) & 0xFC);
+}
+
 static void splash(void)
 {
+    beep(784, 70);
+    beep(1046, 110);
     putc('\n');
     cputs(0x0E, "   /\\_/\\     ");
     cputs(0x0B, "damir@kotos\n");
@@ -245,14 +266,26 @@ static void splash(void)
     cputs(0x0E, "   > ^ <     ");
     cputs(0x0A, "ОС     ");
     cputs(0x07, "KotOS 1.0\n");
+    msleep(80);
     cputs(0x0E, "             ");
     cputs(0x0A, "Ядро   ");
     cputs(0x07, "native x86 (Multiboot)\n");
+    msleep(80);
     cputs(0x0E, "             ");
     cputs(0x0A, "Оболочка ");
     cputs(0x07, "kotos-sh\n");
-    vga_set_attr(0x07);
-    putc('\n');
+    msleep(80);
+    vga_set_attr(0x0A);
+    puts("Загрузка [");
+    {
+        int i;
+        for (i = 0; i < 12; i++) {
+            putc('#');
+            msleep(30);
+        }
+    }
+    puts("] OK\n");
+    beep(1318, 90);
 }
 
 static char hist[8][64];
@@ -1910,6 +1943,19 @@ static int kbd_poll(void)
     return c ? (int)(u8)c : -1;
 }
 
+static void gui_open_anim(void)
+{
+    int t;
+    u32 x0 = wins[0].x, y0 = wins[0].y, w0 = wins[0].w, h0 = wins[0].h;
+    for (t = 1; t <= 8; t++) {
+        u32 w = w0 * (u32)t / 8, h = h0 * (u32)t / 8;
+        u32 x = x0 + (w0 - w) / 2, y = y0 + (h0 - h) / 2;
+        rect(x, y, w, h, 0x0E141B);
+        frame(x, y, w, h, 0x2563EB, 2);
+        msleep(25);
+    }
+}
+
 static void gui_run(void)
 {
     char line[128];
@@ -1924,6 +1970,10 @@ static void gui_run(void)
 
     mouse_init();
     console_setup(wins[0].x + 8, wins[0].y + 32, 80, 24);
+    desktop();
+    beep(660, 50);
+    beep(880, 60);
+    gui_open_anim();
     prompt();
     scene();
     cursor_draw();
@@ -1999,6 +2049,7 @@ static void gui_run(void)
     }
 
     cursor_erase();
+    beep(440, 90);
     gui_running = 0;
     console_setup(0, 0, fb_w / 8, fb_h / 16);
     vga_clear();
