@@ -4,6 +4,7 @@ typedef unsigned int u32;
 
 static u8 cp866_of(u32 cp);
 static int fb_console_active;
+static int gui_running;
 static u32 con_x, con_y;
 static void fb_console_putc(char c);
 static void fb_console_clear(void);
@@ -943,12 +944,12 @@ static void run_command(const char *cmd)
     } else if (streq(verb, "os")) {
         splash();
     } else if (streq(verb, "gui") || (streq(verb, "install") && streq(arg, "gui"))) {
-        if (gfx_init()) {
+        if (gui_running) {
+            puts("GUI уже запущен\n");
+        } else if (gfx_init()) {
             gui_run();
-            vga_clear();
-            splash();
         } else {
-            puts("VBE not available, GUI cannot be installed\n");
+            puts("VBE недоступен, GUI не запустить\n");
         }
     } else if (streq(verb, "version")) {
         puts("KotOS 1.0, собственное ядро (x86, Multiboot)\n");
@@ -1295,64 +1296,124 @@ static void frame(u32 x, u32 y, u32 w, u32 h, u32 c, u32 t)
 }
 
 
-static u32 con_fg = 0xE6EDF3;
-static u32 con_bg = 0x0B0F14;
+#define CON_MAX_ROWS 48
+#define CON_MAX_COLS 128
 
-static void fb_draw_cell(u32 cx, u32 cy, u8 code)
+static struct {
+    u32 ox, oy, cols, rows, cx, cy, fg, bg;
+    u8 buf[CON_MAX_ROWS][CON_MAX_COLS];
+} con;
+
+static void draw_glyph(u32 x, u32 y, u8 code, u32 fg, u32 bg)
 {
-    u32 x = cx * 8, y = cy * 16, r, b;
+    u32 r, b;
     for (r = 0; r < 16; r++) {
         u8 bits = font866[(u32)code * 16 + r];
         for (b = 0; b < 8; b++)
-            px(x + b, y + r, (bits & (0x80 >> b)) ? con_fg : con_bg);
+            px(x + b, y + r, (bits & (0x80 >> b)) ? fg : bg);
     }
 }
 
-static void fb_scroll(void)
+static void con_draw_cell(u32 cx, u32 cy, u8 ch)
 {
-    u32 y, i, words = fb_pitch / 4;
-    for (y = 16; y < fb_h; y++) {
-        u32 *src = (u32 *)((u8 *)fb + y * fb_pitch);
-        u32 *dst = (u32 *)((u8 *)fb + (y - 16) * fb_pitch);
-        for (i = 0; i < words; i++)
-            dst[i] = src[i];
-    }
-    rect(0, fb_h - 16, fb_w, 16, con_bg);
+    draw_glyph(con.ox + cx * 8, con.oy + cy * 16, ch, con.fg, con.bg);
+}
+
+static void con_redraw(void)
+{
+    u32 x, y;
+    for (y = 0; y < con.rows; y++)
+        for (x = 0; x < con.cols; x++)
+            con_draw_cell(x, y, con.buf[y][x]);
+}
+
+static void con_clear(void)
+{
+    u32 x, y;
+    if (!con.cols || !con.rows)
+        return;
+    rect(con.ox, con.oy, con.cols * 8, con.rows * 16, con.bg);
+    for (y = 0; y < con.rows; y++)
+        for (x = 0; x < con.cols; x++)
+            con.buf[y][x] = ' ';
+    con.cx = 0;
+    con.cy = 0;
+}
+
+static void con_scroll(void)
+{
+    u32 x, y;
+    for (y = 0; y + 1 < con.rows; y++)
+        for (x = 0; x < con.cols; x++)
+            con.buf[y][x] = con.buf[y + 1][x];
+    for (x = 0; x < con.cols; x++)
+        con.buf[con.rows - 1][x] = ' ';
+    con_redraw();
 }
 
 static void fb_console_putc(char c)
 {
-    u32 cols = fb_w / 8, rows = fb_h / 16;
-    if (c == '\n') {
-        con_x = 0;
-        con_y++;
-    } else if (c == '\r') {
-        con_x = 0;
-    } else if (c == '\b') {
-        if (con_x) {
-            con_x--;
-            fb_draw_cell(con_x, con_y, ' ');
+    u8 u = (u8)c;
+    if (u == '\n') {
+        con.cx = 0;
+        con.cy++;
+    } else if (u == '\r') {
+        con.cx = 0;
+    } else if (u == '\b') {
+        if (con.cx) {
+            con.cx--;
+            con.buf[con.cy][con.cx] = ' ';
+            con_draw_cell(con.cx, con.cy, ' ');
         }
         return;
     } else {
-        fb_draw_cell(con_x, con_y, (u8)c);
-        con_x++;
-        if (con_x >= cols) {
-            con_x = 0;
-            con_y++;
+        con.buf[con.cy][con.cx] = u;
+        con_draw_cell(con.cx, con.cy, u);
+        con.cx++;
+        if (con.cx >= con.cols) {
+            con.cx = 0;
+            con.cy++;
         }
     }
-    if (con_y >= rows) {
-        fb_scroll();
-        con_y = rows - 1;
+    if (con.cy >= con.rows) {
+        con_scroll();
+        con.cy = con.rows - 1;
     }
 }
 
 static void fb_console_clear(void)
 {
-    rect(0, 0, fb_w, fb_h, con_bg);
-    con_x = 0;
-    con_y = 0;
+    con_clear();
+}
+
+static void console_setup(u32 ox, u32 oy, u32 cols, u32 rows)
+{
+    con.ox = ox;
+    con.oy = oy;
+    con.cols = cols;
+    con.rows = rows;
+    con.fg = 0xE6EDF3;
+    con.bg = 0x0B0F14;
+    con_clear();
+}
+
+static void draw_text(u32 x, u32 y, const char *s, u32 fg, u32 bg)
+{
+    u32 i = 0;
+    while (*s) {
+        unsigned char c = (unsigned char)*s++;
+        u8 code;
+        if (c < 0x80) {
+            code = c;
+        } else if ((c == 0xD0 || c == 0xD1) && *s) {
+            unsigned char c2 = (unsigned char)*s++;
+            code = cp866_of(((c & 0x1F) << 6) | (c2 & 0x3F));
+        } else {
+            code = '?';
+        }
+        draw_glyph(x + i * 8, y, code, fg, bg);
+        i++;
+    }
 }
 
 static void desktop(void)
@@ -1410,67 +1471,309 @@ static const unsigned char cursor_bmp[19][12] = {
     {0,0,0,0,0,0,0,1,0,1,0,0}
 };
 
-static u32 cur_x = 500, cur_y = 400;
+typedef struct {
+    int x, y, w, h;
+    const char *title;
+    int visible;
+} kotwin;
 
-static void draw_cursor(void)
+static kotwin wins[2];
+static int order[2] = {1, 0};
+static int mouse_x = 512, mouse_y = 384;
+static int mouse_dx, mouse_dy, mouse_buttons, mouse_cycle;
+static u8 mouse_pkt[3];
+static u32 cur_bg[19][12];
+static int cur_saved;
+
+static u32 px_get(u32 x, u32 y)
 {
-    u32 j, i;
-    for (j = 0; j < 19; j++) {
+    if (x >= fb_w || y >= fb_h)
+        return 0;
+    return fb[(y * fb_pitch + x * 4) / 4];
+}
+
+static void cursor_draw(void)
+{
+    int j, i;
+    for (j = 0; j < 19; j++)
+        for (i = 0; i < 12; i++)
+            cur_bg[j][i] = px_get((u32)(mouse_x + i - 1), (u32)(mouse_y + j - 1));
+    for (j = 0; j < 19; j++)
         for (i = 0; i < 12; i++) {
             if (!cursor_bmp[j][i])
                 continue;
-            px(cur_x + i - 1, cur_y + j - 1, 0x000000);
-            px(cur_x + i, cur_y + j, 0xFFFFFF);
+            px((u32)(mouse_x + i - 1), (u32)(mouse_y + j - 1), 0x000000);
+            px((u32)(mouse_x + i), (u32)(mouse_y + j), 0xFFFFFF);
         }
+    cur_saved = 1;
+}
+
+static void cursor_erase(void)
+{
+    int j, i;
+    if (!cur_saved)
+        return;
+    for (j = 0; j < 19; j++)
+        for (i = 0; i < 12; i++)
+            px((u32)(mouse_x + i - 1), (u32)(mouse_y + j - 1), cur_bg[j][i]);
+    cur_saved = 0;
+}
+
+static void mouse_wait_write(void)
+{
+    int t = 100000;
+    while (t-- > 0 && (inb(0x64) & 2))
+        ;
+}
+
+static void mouse_wait_read(void)
+{
+    int t = 100000;
+    while (t-- > 0 && !(inb(0x64) & 1))
+        ;
+}
+
+static void mouse_init(void)
+{
+    u8 st;
+    mouse_wait_write(); outb(0x64, 0xA8);
+    mouse_wait_write(); outb(0x64, 0x20);
+    mouse_wait_read();  st = inb(0x60);
+    st |= 0x02;
+    st &= (u8)~0x20;
+    mouse_wait_write(); outb(0x64, 0x60);
+    mouse_wait_write(); outb(0x60, st);
+    mouse_wait_write(); outb(0x64, 0xD4);
+    mouse_wait_write(); outb(0x60, 0xF4);
+    mouse_cycle = 0;
+}
+
+static int mouse_poll(void)
+{
+    u8 st, d;
+    int dx, dy;
+    if (!(inb(0x64) & 1))
+        return 0;
+    st = inb(0x64);
+    if (!(st & 0x20))
+        return 0;
+    d = inb(0x60);
+    mouse_pkt[mouse_cycle++] = d;
+    if (mouse_cycle < 3)
+        return 0;
+    mouse_cycle = 0;
+    dx = mouse_pkt[1];
+    dy = mouse_pkt[2];
+    if (mouse_pkt[0] & 0x10)
+        dx -= 256;
+    if (mouse_pkt[0] & 0x20)
+        dy -= 256;
+    mouse_dx = dx;
+    mouse_dy = dy;
+    mouse_buttons = mouse_pkt[0] & 7;
+    return 1;
+}
+
+static int hit_window(int x, int y)
+{
+    int k, i;
+    for (k = 1; k >= 0; k--) {
+        i = order[k];
+        if (!wins[i].visible)
+            continue;
+        if (x >= wins[i].x && x < wins[i].x + wins[i].w &&
+            y >= wins[i].y && y < wins[i].y + wins[i].h)
+            return i;
+    }
+    return -1;
+}
+
+static void focus(int i)
+{
+    if (order[1] == i)
+        return;
+    order[0] = order[1];
+    order[1] = i;
+}
+
+static void draw_clock(void)
+{
+    u8 h = cmos_read(0x04), m = cmos_read(0x02), sec = cmos_read(0x00);
+    u8 b = cmos_read(0x0B);
+    char t[9];
+    if (!(b & 0x04)) {
+        h = from_bcd(h); m = from_bcd(m); sec = from_bcd(sec);
+    }
+    t[0] = (char)('0' + h / 10); t[1] = (char)('0' + h % 10); t[2] = ':';
+    t[3] = (char)('0' + m / 10); t[4] = (char)('0' + m % 10); t[5] = ':';
+    t[6] = (char)('0' + sec / 10); t[7] = (char)('0' + sec % 10); t[8] = 0;
+    rect(fb_w - 96, 4, 88, 28, 0x141C26);
+    draw_text(fb_w - 88, 10, t, 0x9FB3C8, 0x141C26);
+}
+
+static void scene(void)
+{
+    u32 x, y;
+    int k, i;
+    for (y = 0; y < fb_h; y++) {
+        u32 t = y * 255 / fb_h;
+        u32 c = ((8 + t / 6) << 16) | ((12 + t / 4) << 8) | (24 + t / 3);
+        for (x = 0; x < fb_w; x++)
+            px(x, y, c);
+    }
+    rect(0, 0, fb_w, 36, 0x141C26);
+    rect(0, 36, fb_w, 1, 0x2A3A4A);
+    rect(8, 4, 44, 28, 0x1E2A36);
+    draw_text(16, 10, "KotOS", 0x22D3EE, 0x1E2A36);
+    rect(60, 4, 130, 28, 0x1E2A36);
+    draw_text(68, 10, "Терминал", 0xE6EDF3, 0x1E2A36);
+    rect(198, 4, 140, 28, 0x1E2A36);
+    draw_text(206, 10, "О системе", 0xE6EDF3, 0x1E2A36);
+    for (k = 0; k < 2; k++) {
+        i = order[k];
+        if (!wins[i].visible)
+            continue;
+        rect(wins[i].x, wins[i].y, wins[i].w, wins[i].h, 0x0E141B);
+        frame(wins[i].x, wins[i].y, wins[i].w, wins[i].h, 0x2A3A4A, 2);
+        rect(wins[i].x, wins[i].y, wins[i].w, 28, 0x2563EB);
+        draw_text(wins[i].x + 8, wins[i].y + 6, wins[i].title, 0xFFFFFF, 0x2563EB);
+        rect(wins[i].x + wins[i].w - 24, wins[i].y + 7, 14, 14, 0xF87171);
+        if (i == 1) {
+            draw_text(wins[1].x + 12, wins[1].y + 44, "KotOS 1.0", 0x22D3EE, 0x0E141B);
+            draw_text(wins[1].x + 12, wins[1].y + 70, "Собственное ядро, без Linux.", 0xE6EDF3, 0x0E141B);
+            draw_text(wins[1].x + 12, wins[1].y + 96, "Ring 3, syscalls, RAMFS, GUI.", 0xE6EDF3, 0x0E141B);
+        }
+    }
+    if (wins[0].visible)
+        con_redraw();
+    draw_clock();
+    cur_saved = 0;
+}
+
+static void taskbar_click(int x, int y)
+{
+    if (y >= 36)
+        return;
+    if (x >= 60 && x < 190) {
+        wins[0].visible = !wins[0].visible;
+        if (wins[0].visible)
+            focus(0);
+    } else if (x >= 198 && x < 338) {
+        wins[1].visible = !wins[1].visible;
+        if (wins[1].visible)
+            focus(1);
     }
 }
 
-
-
-static u8 kbd_scancode(void)
+static int kbd_poll(void)
 {
-    while (!(inb(0x64) & 1))
-        ;
-    return inb(0x60);
+    u8 st, sc;
+    char c;
+    if (!(inb(0x64) & 1))
+        return -1;
+    st = inb(0x64);
+    if (st & 0x20)
+        return -1;
+    sc = inb(0x60);
+    if (sc == 0x2A || sc == 0x36) { shift_down = 1; return -1; }
+    if (sc == 0xAA || sc == 0xB6) { shift_down = 0; return -1; }
+    if (sc & 0x80)
+        return -1;
+    c = shift_down ? kbd_map_shift[sc] : kbd_map[sc];
+    return c ? (int)(u8)c : -1;
 }
 
 static void gui_run(void)
 {
-    int e0 = 0;
-    puts("GUI: Bochs VBE 1024x768x32, LFB ");
-    puthex(fb_addr);
-    putc('\n');
-    desktop();
-    draw_cursor();
+    char line[128];
+    int line_len = 0, dragging = -1, ddx = 0, ddy = 0, last = -1, c;
+
+    gui_running = 1;
+    wins[0].x = 120; wins[0].y = 80; wins[0].w = 656; wins[0].h = 420;
+    wins[0].title = "Терминал"; wins[0].visible = 1;
+    wins[1].x = 420; wins[1].y = 250; wins[1].w = 420; wins[1].h = 200;
+    wins[1].title = "О системе"; wins[1].visible = 0;
+    order[0] = 1; order[1] = 0;
+
+    mouse_init();
+    console_setup(wins[0].x + 8, wins[0].y + 32, 80, 24);
+    prompt();
+    scene();
+    cursor_draw();
+
     for (;;) {
-        u8 sc = kbd_scancode();
-        if (sc == 0xE0) {
-            e0 = 1;
-            continue;
+        if (mouse_poll()) {
+            mouse_x += mouse_dx;
+            mouse_y -= mouse_dy;
+            if (mouse_x < 0) mouse_x = 0;
+            if (mouse_y < 0) mouse_y = 0;
+            if (mouse_x > (int)fb_w - 1) mouse_x = (int)fb_w - 1;
+            if (mouse_y > (int)fb_h - 1) mouse_y = (int)fb_h - 1;
+            cursor_erase();
+            if (mouse_buttons & 1) {
+                if (dragging < 0) {
+                    int w = hit_window(mouse_x, mouse_y);
+                    if (w >= 0) {
+                        focus(w);
+                        if (mouse_x >= wins[w].x + wins[w].w - 24 && mouse_y < wins[w].y + 28)
+                            wins[w].visible = 0;
+                        else if (mouse_y < wins[w].y + 28) {
+                            dragging = w;
+                            ddx = mouse_x - wins[w].x;
+                            ddy = mouse_y - wins[w].y;
+                        }
+                    } else {
+                        taskbar_click(mouse_x, mouse_y);
+                    }
+                    scene();
+                } else {
+                    wins[dragging].x = mouse_x - ddx;
+                    wins[dragging].y = mouse_y - ddy;
+                    if (dragging == 0) {
+                        con.ox = wins[0].x + 8;
+                        con.oy = wins[0].y + 32;
+                    }
+                    scene();
+                }
+            } else {
+                dragging = -1;
+            }
+            cursor_draw();
         }
-        if (sc & 0x80) {
-            e0 = 0;
-            continue;
+
+        c = kbd_poll();
+        if (c >= 0) {
+            if (c == 27)
+                break;
+            if (c == '\n') {
+                putc('\n');
+                line[line_len] = 0;
+                run_command(line);
+                line_len = 0;
+                prompt();
+            } else if (c == '\b') {
+                if (line_len) {
+                    line_len--;
+                    putc('\b');
+                }
+            } else if (c >= 32 && c < 127 && line_len < 127) {
+                line[line_len++] = c;
+                putc(c);
+            }
         }
-        u32 nx = cur_x, ny = cur_y;
-        if (e0 && sc == 0x4B) nx -= 8;
-        else if (e0 && sc == 0x4D) nx += 8;
-        else if (e0 && sc == 0x48) ny -= 8;
-        else if (e0 && sc == 0x50) ny += 8;
-        else if (!e0 && sc == 0x01) {
-            puts("GUI: Esc, halted\n");
-            for (;;)
-                __asm__ volatile("cli; hlt");
-        }
-        e0 = 0;
-        if (nx != cur_x || ny != cur_y) {
-            rect(cur_x, cur_y, 12, 19, 0);
-            cur_x = nx;
-            cur_y = ny;
-            desktop();
-            draw_cursor();
+
+        c = (int)read_time_secs();
+        if (c != last) {
+            last = c;
+            draw_clock();
         }
     }
+
+    cursor_erase();
+    gui_running = 0;
+    console_setup(0, 0, fb_w / 8, fb_h / 16);
+    vga_clear();
+    splash();
 }
 
 extern u32 mb_magic;
@@ -1719,7 +2022,7 @@ void kmain(void)
     paging_init();
     if (gfx_init()) {
         fb_console_active = 1;
-        fb_console_clear();
+        console_setup(0, 0, fb_w / 8, fb_h / 16);
     }
     splash();
     puts("Введите help для списка команд.\n\n");
