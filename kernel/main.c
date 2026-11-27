@@ -199,6 +199,10 @@ static void splash(void)
     putc('\n');
 }
 
+static char hist[8][64];
+static int hist_n = 0;
+static u32 boot_sec = 0;
+
 static char line[128];
 static int line_len = 0;
 
@@ -644,6 +648,217 @@ static void cmd_clock(void)
     putc('\n');
 }
 
+
+static u32 parse_num(const char *s)
+{
+    u32 v = 0;
+    while (*s >= '0' && *s <= '9') {
+        v = v * 10 + (u32)(*s - '0');
+        s++;
+    }
+    return v;
+}
+
+static u32 read_time_secs(void)
+{
+    u8 h = cmos_read(0x04), m = cmos_read(0x02), sec = cmos_read(0x00);
+    u8 b = cmos_read(0x0B);
+    if (!(b & 0x04)) {
+        h = from_bcd(h);
+        m = from_bcd(m);
+        sec = from_bcd(sec);
+    }
+    return (u32)h * 3600 + (u32)m * 60 + sec;
+}
+
+static int str_less(const char *a, const char *b)
+{
+    while (*a && *a != '\n' && *b && *b != '\n') {
+        if (*a != *b)
+            return (unsigned char)*a < (unsigned char)*b;
+        a++;
+        b++;
+    }
+    return (*a == 0 || *a == '\n') && !(*b == 0 || *b == '\n');
+}
+
+static void tree_walk(int dir, int depth)
+{
+    int i, k;
+    for (i = 1; i < FS_MAX; i++) {
+        if (!fs[i].used || fs[i].parent != dir)
+            continue;
+        for (k = 0; k < depth; k++)
+            puts("  ");
+        puts(fs[i].name);
+        if (fs[i].is_dir)
+            putc('/');
+        putc('\n');
+        if (fs[i].is_dir && depth < 4)
+            tree_walk(i, depth + 1);
+    }
+}
+
+static void find_walk(int dir, const char *needle, int depth)
+{
+    int i, k;
+    for (i = 1; i < FS_MAX; i++) {
+        if (!fs[i].used || fs[i].parent != dir)
+            continue;
+        if (str_contains(fs[i].name, needle)) {
+            for (k = 0; k < depth; k++)
+                puts("  ");
+            puts(fs[i].name);
+            if (fs[i].is_dir)
+                putc('/');
+            putc('\n');
+        }
+        if (fs[i].is_dir && depth < 4)
+            find_walk(i, needle, depth + 1);
+    }
+}
+
+static void cmd_stat(const char *name)
+{
+    int idx = fs_find(cwd, name);
+    if (idx <= 0) {
+        puts("stat: no such entry\n");
+        return;
+    }
+    puts("name: ");
+    puts(fs[idx].name);
+    puts("\ntype: ");
+    puts(fs[idx].is_dir ? "directory" : "file");
+    puts("\nsize: ");
+    putu(fs[idx].size);
+    puts(" bytes\n");
+}
+
+static void cmd_sort(const char *name)
+{
+    int idx = fs_file_index(name);
+    int offs[64], n = 0, i, j, off = 0;
+    if (idx < 0)
+        return;
+    while (fs[idx].data[off] && n < 64) {
+        offs[n++] = off;
+        while (fs[idx].data[off] && fs[idx].data[off] != '\n')
+            off++;
+        if (fs[idx].data[off] == '\n')
+            off++;
+    }
+    for (i = 0; i < n; i++)
+        for (j = 0; j + 1 < n - i; j++)
+            if (str_less(fs[idx].data + offs[j + 1], fs[idx].data + offs[j])) {
+                int t = offs[j];
+                offs[j] = offs[j + 1];
+                offs[j + 1] = t;
+            }
+    for (i = 0; i < n; i++) {
+        const char *p = fs[idx].data + offs[i];
+        while (*p && *p != '\n')
+            putc(*p++);
+        putc('\n');
+    }
+}
+
+static void cmd_rev(const char *name)
+{
+    int idx = fs_file_index(name);
+    char buf[FS_DATA];
+    int pos = 0, len, i;
+    if (idx < 0)
+        return;
+    while (line_copy(fs[idx].data, &pos, buf, FS_DATA)) {
+        len = 0;
+        while (buf[len])
+            len++;
+        for (i = len - 1; i >= 0; i--)
+            putc(buf[i]);
+        putc('\n');
+    }
+}
+
+static void cmd_hex(const char *name)
+{
+    int idx = fs_file_index(name);
+    u32 i, lim;
+    static const char hx[] = "0123456789abcdef";
+    if (idx < 0)
+        return;
+    lim = fs[idx].size < 64 ? fs[idx].size : 64;
+    for (i = 0; i < lim; i++) {
+        u8 b = (u8)fs[idx].data[i];
+        putc(hx[b >> 4]);
+        putc(hx[b & 15]);
+        putc(' ');
+        if ((i + 1) % 16 == 0)
+            putc('\n');
+    }
+    putc('\n');
+}
+
+static void cmd_seq(const char *arg)
+{
+    u32 n = parse_num(arg), i;
+    if (n > 200)
+        n = 200;
+    for (i = 1; i <= n; i++) {
+        putu(i);
+        putc('\n');
+    }
+}
+
+static void cmd_uptime(void)
+{
+    u32 now = read_time_secs();
+    u32 diff = now >= boot_sec ? now - boot_sec : now + 86400 - boot_sec;
+    puts("up ");
+    putu(diff / 60);
+    puts(" min ");
+    putu(diff % 60);
+    puts(" sec\n");
+}
+
+static void cmd_sleep(const char *arg)
+{
+    u32 n = parse_num(arg);
+    u32 target;
+    if (!n)
+        return;
+    if (n > 10)
+        n = 10;
+    target = (read_time_secs() + n) % 86400;
+    while (read_time_secs() != target)
+        ;
+}
+
+static const char *const known_cmds[] = {
+    "help", "about", "os", "gui", "version", "clear", "reboot", "halt",
+    "look", "ls", "dir", "go", "cd", "where", "pwd", "newdir", "mkdir",
+    "newfile", "touch", "show", "cat", "say", "echo", "del", "rm",
+    "copy", "cp", "move", "mv", "dropdir", "rmdir", "rename", "ren",
+    "append", "top", "head", "bottom", "tail", "count", "wc",
+    "findtext", "grep", "find", "tree", "sort", "rev", "hex", "seq",
+    "stat", "du", "clock", "date", "uptime", "vars", "env", "host",
+    "hostname", "me", "id", "ok", "true", "nope", "false", "mem",
+    "free", "sysinfo", "uname", "who", "whoami", "history", "which",
+    "sleep", "exit", "poweroff", 0
+};
+
+static void cmd_which(const char *name)
+{
+    int i;
+    for (i = 0; known_cmds[i]; i++) {
+        if (streq(known_cmds[i], name)) {
+            puts(name);
+            puts(": built-in\n");
+            return;
+        }
+    }
+    puts("which: not found\n");
+}
+
 static void run_command(const char *cmd)
 {
     char verb[24], arg1[FS_NAME], arg2[FS_NAME], rest[FS_DATA];
@@ -662,10 +877,10 @@ static void run_command(const char *cmd)
         return;
 
     if (streq(verb, "help")) {
-        puts("Core:  look, go, where, newdir, newfile, show, say, del, copy, move, dropdir\n");
-        puts("Text:  top, bottom, count, findtext\n");
-        puts("Sys:   clock, vars, host, me, ok, nope, mem, sysinfo, who\n");
-        puts("Other: os, install gui, version, clear, reboot, halt\n");
+        puts("Core: look go where newdir newfile show say del copy move dropdir rename append\n");
+        puts("Text: top bottom count findtext sort rev hex seq find tree\n");
+        puts("Sys:  clock uptime vars host me ok nope mem sysinfo who which stat du\n");
+        puts("More: history sleep exit os install gui version clear reboot halt\n");
     } else if (streq(verb, "about")) {
         puts("KotOS is a real operating system with its own kernel, no Linux.\n");
     } else if (streq(verb, "os")) {
@@ -809,6 +1024,65 @@ static void run_command(const char *cmd)
         puts("KotOS 1.0 i386 Multiboot\n");
     } else if (streq(verb, "who") || streq(verb, "whoami")) {
         puts("root\n");
+    } else if (streq(verb, "rename") || streq(verb, "ren")) {
+        p = arg;
+        if (!take_token(&p, arg1, FS_NAME) || !take_token(&p, arg2, FS_NAME)) {
+            puts("rename: usage: rename <src> <dst>\n");
+        } else {
+            int si = fs_find(cwd, arg1);
+            if (si <= 0 || fs_find(cwd, arg2) >= 0)
+                puts("rename: cannot rename\n");
+            else
+                str_copy(fs[si].name, arg2, FS_NAME);
+        }
+    } else if (streq(verb, "append") || streq(verb, "app")) {
+        p = arg;
+        if (!take_token(&p, arg1, FS_NAME) || !*p)
+            puts("append: usage: append <file> <text>\n");
+        else {
+            while (*p == ' ')
+                p++;
+            fs_append_file(arg1, p);
+        }
+    } else if (streq(verb, "stat") || streq(verb, "info")) {
+        cmd_stat(arg);
+    } else if (streq(verb, "du") || streq(verb, "size")) {
+        int idx = fs_find(cwd, arg);
+        if (idx <= 0) {
+            puts("du: no such entry\n");
+        } else {
+            putu(fs[idx].size);
+            puts(" bytes\n");
+        }
+    } else if (streq(verb, "tree")) {
+        puts("./\n");
+        tree_walk(cwd, 1);
+    } else if (streq(verb, "find")) {
+        find_walk(cwd, arg, 0);
+    } else if (streq(verb, "sort")) {
+        cmd_sort(arg);
+    } else if (streq(verb, "rev")) {
+        cmd_rev(arg);
+    } else if (streq(verb, "hex")) {
+        cmd_hex(arg);
+    } else if (streq(verb, "seq")) {
+        cmd_seq(arg);
+    } else if (streq(verb, "uptime")) {
+        cmd_uptime();
+    } else if (streq(verb, "history")) {
+        int start = hist_n > 8 ? hist_n - 8 : 0, h;
+        for (h = start; h < hist_n; h++) {
+            puts(hist[h % 8]);
+            putc('\n');
+        }
+    } else if (streq(verb, "which")) {
+        cmd_which(arg);
+    } else if (streq(verb, "sleep")) {
+        cmd_sleep(arg);
+    } else if (streq(verb, "exit") || streq(verb, "poweroff")) {
+        puts("Bye.\n");
+        for (;;)
+            __asm__ volatile("cli; hlt");
     } else {
         puts("Unknown command: ");
         puts(verb);
@@ -823,6 +1097,10 @@ static void shell(void)
             putc('\n');
             line[line_len] = 0;
             run_command(line);
+            if (line[0]) {
+                str_copy(hist[hist_n % 8], line, 64);
+                hist_n++;
+            }
             line_len = 0;
             prompt();
         } else if (c == '\b') {
@@ -1128,6 +1406,7 @@ void kmain(void)
     vga_clear();
 
     fs_init();
+    boot_sec = read_time_secs();
     splash();
     puts("Type help for a list of commands.\n\n");
     prompt();

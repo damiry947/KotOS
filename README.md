@@ -7,9 +7,9 @@
 - загрузка через Multiboot в QEMU;
 - собственный вывод в VGA-текст 80×25 и в последовательный порт COM1;
 - обработка клавиатуры (PS/2, скан-код set 1, Shift);
-- шелл KotOS: `look`, `go`, `where`, `newdir`, `newfile`, `show`, `say`, `del`, `copy`, `move`, `dropdir`;
-- текст: `top`, `bottom`, `count`, `findtext`;
-- системные: `clock` (RTC), `vars`, `host`, `me`, `ok`, `nope`, `mem`, `sysinfo`, `who`;
+- шелл KotOS: `look`, `go`, `where`, `newdir`, `newfile`, `show`, `say`, `del`, `copy`, `move`, `dropdir`, `rename`, `append`;
+- текст и поиск: `top`, `bottom`, `count`, `findtext`, `sort`, `rev`, `hex`, `seq`, `find`, `tree`;
+- системные: `clock`, `uptime`, `vars`, `host`, `me`, `ok`, `nope`, `mem`, `sysinfo`, `who`, `stat`, `du`, `which`, `history`, `sleep`, `exit`;
 - графика: `os`, `install gui`; служебные: `help`, `about`, `version`, `clear`, `reboot`, `halt`;
 - RAMFS в памяти (64 узла, файлы до 512 байт), `say текст > файл` и `say текст >> файл`;
 - Linux-имена (`ls`, `cd`, `pwd`, `mkdir`, `touch`, `cat`, `echo`, `rm`, `cp`, `mv`, `rmdir`, `head`, `tail`, `wc`, `grep`, `date`, `env`, `free`, `uname`, `whoami` и др.) работают как алиасы.
@@ -55,7 +55,7 @@ docs/         — скриншоты
 - [x] Клавиатура и мини-шелл
 - [x] VBE framebuffer: рабочий стол, панель, окно, курсор (стрелки)
 - [x] RAMFS и базовые файловые команды
-- [x] Расширенный набор команд (файлы, текст, RTC)
+- [x] Расширенный набор команд (файлы, текст, RTC, история, uptime)
 - [ ] Шрифт и текст в графическом режиме
 - [ ] Перетаскивание окон мышью (PS/2 mouse)
 - [ ] Прерывания (IDT/PIC) и таймер
