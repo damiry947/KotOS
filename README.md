@@ -10,7 +10,7 @@
 - шелл KotOS: `look`, `go`, `where`, `newdir`, `newfile`, `show`, `say`, `del`, `copy`, `move`, `dropdir`, `rename`, `append`;
 - текст и поиск: `top`, `bottom`, `count`, `findtext`, `sort`, `rev`, `hex`, `seq`, `find`, `tree`;
 - системные: `clock`, `uptime`, `vars`, `host`, `me`, `ok`, `nope`, `mem`, `sysinfo`, `who`, `stat`, `du`, `which`, `history`, `sleep`, `exit`;
-- графика: `os`, `install gui`; служебные: `help`, `about`, `version`, `clear`, `reboot`, `halt`;
+- графика: `os`, `install <компонент>` (`install gui`, `install list`); служебные: `help`, `about`, `version`, `clear`, `reboot`, `halt`;
 - RAMFS в памяти (64 узла, файлы до 512 байт), `say текст > файл` и `say текст >> файл`;
 - Linux-имена (`ls`, `cd`, `pwd`, `mkdir`, `touch`, `cat`, `echo`, `rm`, `cp`, `mv`, `rmdir`, `head`, `tail`, `wc`, `grep`, `date`, `env`, `free`, `uname`, `whoami` и др.) работают как алиасы.
 - собственная графика: Bochs VBE 1024×768×32, LFB через PCI BAR0;

@@ -5,6 +5,7 @@ typedef unsigned int u32;
 static u8 cp866_of(u32 cp);
 static int fb_console_active;
 static int gui_running;
+static int gui_installed;
 static u32 con_x, con_y;
 static void fb_console_putc(char c);
 static void fb_console_clear(void);
@@ -890,7 +891,7 @@ static void cmd_sleep(const char *arg)
 }
 
 static const char *const known_cmds[] = {
-    "help", "about", "os", "gui", "version", "clear", "reboot", "halt",
+    "help", "about", "os", "gui", "install", "version", "clear", "reboot", "halt",
     "look", "ls", "dir", "go", "cd", "where", "pwd", "newdir", "mkdir",
     "newfile", "touch", "show", "cat", "say", "echo", "del", "rm",
     "copy", "cp", "move", "mv", "dropdir", "rmdir", "rename", "ren",
@@ -913,6 +914,20 @@ static void cmd_which(const char *name)
         }
     }
     puts("which: not found\n");
+}
+
+static void gui_start(void)
+{
+    if (gui_running) {
+        puts("GUI уже запущен\n");
+        return;
+    }
+    if (gfx_init()) {
+        gui_installed = 1;
+        gui_run();
+    } else {
+        puts("VBE недоступен, GUI не запустить\n");
+    }
 }
 
 static void run_command(const char *cmd)
@@ -938,18 +953,29 @@ static void run_command(const char *cmd)
         puts("Текст: top bottom count findtext sort rev hex seq find tree\n");
         puts("Система: clock uptime vars host me ok nope mem sysinfo who\n");
         puts("         which stat du history sleep user exit\n");
-        puts("Прочее: os install gui version clear reboot halt\n");
+        puts("Прочее: os gui install version clear reboot halt\n");
+        puts("Установка: install <gui|list>\n");
     } else if (streq(verb, "about")) {
         puts("KotOS — реальная ОС с собственным ядром, без Linux.\n");
     } else if (streq(verb, "os")) {
         splash();
-    } else if (streq(verb, "gui") || (streq(verb, "install") && streq(arg, "gui"))) {
-        if (gui_running) {
-            puts("GUI уже запущен\n");
-        } else if (gfx_init()) {
-            gui_run();
+    } else if (streq(verb, "gui")) {
+        gui_start();
+    } else if (streq(verb, "install")) {
+        char sub[FS_NAME];
+        const char *ap = arg;
+        int have = take_token(&ap, sub, FS_NAME);
+        if (!have || streq(sub, "list")) {
+            puts("Компоненты:\n  gui  [");
+            puts(gui_installed ? "установлен" : "не установлен");
+            puts("]\n");
+        } else if (streq(sub, "gui")) {
+            gui_start();
         } else {
-            puts("VBE недоступен, GUI не запустить\n");
+            puts("Неизвестный компонент: ");
+            puts(sub);
+            putc('\n');
+            puts("Использование: install <gui|list>\n");
         }
     } else if (streq(verb, "version")) {
         puts("KotOS 1.0, собственное ядро (x86, Multiboot)\n");
