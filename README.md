@@ -1,13 +1,15 @@
 # KotOS 1.0
 
-Учебная операционная система с **собственным ядром** — без Linux.
+Операционная система с **собственным ядром** — без Linux.
 
 ## Что уже работает
 
 - загрузка через Multiboot в QEMU;
 - собственный вывод в VGA-текст 80×25 и в последовательный порт COM1;
 - обработка клавиатуры (PS/2, скан-код set 1, Shift);
-- мини-шелл: `help`, `about`, `os`, `version`, `clear`, `reboot`, `halt`;
+- мини-шелл: `help`, `about`, `os`, `install gui`, `version`, `clear`, `reboot`, `halt`;
+- RAMFS в памяти (64 узла, файлы до 512 байт): `ls`/`dir`, `cd`, `pwd`, `mkdir`, `touch`, `cat`, `echo текст > файл`, `rm`;
+- системные: `free` (память из Multiboot), `uname`, `whoami`;
 - собственная графика: Bochs VBE 1024×768×32, LFB через PCI BAR0;
 - рабочий стол, верхняя панель, окно с заголовком и кнопками, курсор мыши (стрелки);
 - экран приветствия в стиле fastfetch: кот, `damir@kotos`, версия, ядро и шелл;
@@ -31,7 +33,7 @@ make
 qemu-system-x86_64 -kernel kernel.elf -m 64
 ```
 
-Скриншоты: `docs/screenshot.png` (GUI), `docs/screenshot-splash.png` (приветствие), `docs/screenshot-text.png` (консоль).
+Скриншоты: `docs/screenshot.png` (GUI), `docs/screenshot-splash.png` (приветствие), `docs/screenshot-shell.png` (команды), `docs/screenshot-text.png` (консоль).
 
 ## Структура
 
@@ -49,6 +51,7 @@ docs/         — скриншоты
 - [x] Multiboot-загрузка и текстовый вывод
 - [x] Клавиатура и мини-шелл
 - [x] VBE framebuffer: рабочий стол, панель, окно, курсор (стрелки)
+- [x] RAMFS и базовые файловые команды
 - [ ] Шрифт и текст в графическом режиме
 - [ ] Перетаскивание окон мышью (PS/2 mouse)
 - [ ] Прерывания (IDT/PIC) и таймер

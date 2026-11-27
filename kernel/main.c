@@ -119,6 +119,10 @@ static void putu(u32 v)
     puts(&b[i]);
 }
 
+static void splash(void);
+static int gfx_init(void);
+static void gui_run(void);
+
 static int streq(const char *a, const char *b)
 {
     while (*a && *a == *b) {
@@ -213,34 +217,310 @@ static void reboot(void)
     outb(0x64, 0xFE);
 }
 
+
+#define FS_MAX 64
+#define FS_NAME 24
+#define FS_DATA 512
+
+typedef struct {
+    char name[FS_NAME];
+    char data[FS_DATA];
+    u32 size;
+    int used;
+    int is_dir;
+    int parent;
+} fsnode;
+
+static fsnode fs[FS_MAX];
+static int cwd = 0;
+
+extern u32 mb_info;
+
+static void str_copy(char *dst, const char *src, int max)
+{
+    int i = 0;
+    while (src[i] && i < max - 1) {
+        dst[i] = src[i];
+        i++;
+    }
+    dst[i] = 0;
+}
+
+static void fs_init(void)
+{
+    int i;
+    for (i = 0; i < FS_MAX; i++)
+        fs[i].used = 0;
+    fs[0].used = 1;
+    fs[0].is_dir = 1;
+    fs[0].parent = -1;
+    fs[0].size = 0;
+    str_copy(fs[0].name, "/", FS_NAME);
+    cwd = 0;
+}
+
+static int fs_find(int dir, const char *name)
+{
+    int i;
+    if (!name || !*name)
+        return -1;
+    if (streq(name, "/"))
+        return 0;
+    for (i = 1; i < FS_MAX; i++)
+        if (fs[i].used && fs[i].parent == dir && streq(fs[i].name, name))
+            return i;
+    return -1;
+}
+
+static int fs_create(int dir, const char *name, int is_dir)
+{
+    int i;
+    if (!name || !*name || streq(name, ".") || streq(name, ".."))
+        return -1;
+    if (fs_find(dir, name) >= 0)
+        return -1;
+    for (i = 1; i < FS_MAX; i++) {
+        if (!fs[i].used) {
+            fs[i].used = 1;
+            fs[i].is_dir = is_dir;
+            fs[i].parent = dir;
+            fs[i].size = 0;
+            fs[i].data[0] = 0;
+            str_copy(fs[i].name, name, FS_NAME);
+            return i;
+        }
+    }
+    return -1;
+}
+
+static int fs_has_children(int dir)
+{
+    int i;
+    for (i = 1; i < FS_MAX; i++)
+        if (fs[i].used && fs[i].parent == dir)
+            return 1;
+    return 0;
+}
+
+static void fs_remove(int dir, const char *name)
+{
+    int idx = fs_find(dir, name);
+    if (idx <= 0) {
+        puts("rm: no such file\n");
+        return;
+    }
+    if (fs[idx].is_dir && fs_has_children(idx)) {
+        puts("rm: directory not empty\n");
+        return;
+    }
+    fs[idx].used = 0;
+}
+
+static void fs_ls(void)
+{
+    int i;
+    for (i = 1; i < FS_MAX; i++) {
+        if (fs[i].used && fs[i].parent == cwd) {
+            puts(fs[i].name);
+            if (fs[i].is_dir)
+                putc('/');
+            puts("  ");
+        }
+    }
+    putc('\n');
+}
+
+static void fs_pwd(void)
+{
+    int chain[16];
+    int n = 0, i;
+    char buf[160];
+    int pos = 0;
+    int cur = cwd;
+
+    while (cur > 0 && n < 16) {
+        chain[n++] = cur;
+        cur = fs[cur].parent;
+    }
+    buf[pos++] = '/';
+    for (i = n - 1; i >= 0; i--) {
+        const char *nm = fs[chain[i]].name;
+        while (*nm && pos < (int)sizeof(buf) - 2)
+            buf[pos++] = *nm++;
+        if (i > 0 && pos < (int)sizeof(buf) - 2)
+            buf[pos++] = '/';
+    }
+    buf[pos] = 0;
+    puts(buf);
+    putc('\n');
+}
+
+static int fs_cd(const char *name)
+{
+    int idx;
+    if (!*name || streq(name, "/")) {
+        cwd = 0;
+        return 1;
+    }
+    if (streq(name, "..")) {
+        if (fs[cwd].parent >= 0)
+            cwd = fs[cwd].parent;
+        return 1;
+    }
+    idx = fs_find(cwd, name);
+    if (idx < 0 || !fs[idx].is_dir) {
+        puts("cd: no such directory\n");
+        return 0;
+    }
+    cwd = idx;
+    return 1;
+}
+
+static void fs_cat(const char *name)
+{
+    int idx = fs_find(cwd, name);
+    if (idx < 0 || fs[idx].is_dir) {
+        puts("cat: no such file\n");
+        return;
+    }
+    if (fs[idx].size)
+        puts(fs[idx].data);
+}
+
+static void fs_write(const char *name, const char *text)
+{
+    int idx = fs_find(cwd, name);
+    if (idx < 0)
+        idx = fs_create(cwd, name, 0);
+    if (idx < 0) {
+        puts("echo: cannot create file\n");
+        return;
+    }
+    if (fs[idx].is_dir) {
+        puts("echo: is a directory\n");
+        return;
+    }
+    str_copy(fs[idx].data, text, FS_DATA);
+    fs[idx].size = 0;
+    while (fs[idx].data[fs[idx].size])
+        fs[idx].size++;
+}
+
 static void run_command(const char *cmd)
 {
-    if (!*cmd)
+    char verb[24];
+    const char *arg;
+    int i = 0, n = 0;
+
+    while (cmd[i] == ' ')
+        i++;
+    while (cmd[i] && cmd[i] != ' ' && n < 23)
+        verb[n++] = cmd[i++];
+    verb[n] = 0;
+    while (cmd[i] == ' ')
+        i++;
+    arg = cmd + i;
+    if (!*verb)
         return;
-    if (streq(cmd, "help")) {
-        puts("Commands: help, about, os, version, clear, reboot, halt\n");
-    } else if (streq(cmd, "about")) {
-        puts("KotOS is a hobby OS with its own kernel, no Linux.\n");
-    } else if (streq(cmd, "os")) {
+
+    if (streq(verb, "help")) {
+        puts("Commands: help, about, os, install gui, version, clear, reboot, halt\n");
+        puts("Files:    ls, dir, cd, pwd, mkdir, touch, cat, echo, rm, free, uname, whoami\n");
+    } else if (streq(verb, "about")) {
+        puts("KotOS is a real operating system with its own kernel, no Linux.\n");
+    } else if (streq(verb, "os")) {
         splash();
-    } else if (streq(cmd, "version")) {
+    } else if (streq(verb, "gui") || (streq(verb, "install") && streq(arg, "gui"))) {
+        if (gfx_init()) {
+            gui_run();
+            vga_clear();
+            splash();
+        } else {
+            puts("VBE not available, GUI cannot be installed\n");
+        }
+    } else if (streq(verb, "version")) {
         puts("KotOS native kernel 1.0 (x86, Multiboot)\n");
-    } else if (streq(cmd, "clear")) {
+    } else if (streq(verb, "clear")) {
         vga_clear();
-    } else if (streq(cmd, "reboot")) {
+    } else if (streq(verb, "reboot")) {
         puts("Rebooting...\n");
         reboot();
-    } else if (streq(cmd, "halt")) {
+    } else if (streq(verb, "halt")) {
         puts("Halted.\n");
         for (;;)
             __asm__ volatile("cli; hlt");
+    } else if (streq(verb, "ls") || streq(verb, "dir")) {
+        fs_ls();
+    } else if (streq(verb, "cd")) {
+        fs_cd(arg);
+    } else if (streq(verb, "pwd")) {
+        fs_pwd();
+    } else if (streq(verb, "mkdir")) {
+        if (!*arg || fs_create(cwd, arg, 1) < 0)
+            puts("mkdir: cannot create directory\n");
+    } else if (streq(verb, "touch")) {
+        if (!*arg)
+            puts("touch: missing name\n");
+        else if (fs_find(cwd, arg) < 0 && fs_create(cwd, arg, 0) < 0)
+            puts("touch: cannot create file\n");
+    } else if (streq(verb, "cat")) {
+        if (!*arg)
+            puts("cat: missing name\n");
+        else
+            fs_cat(arg);
+    } else if (streq(verb, "rm")) {
+        if (!*arg)
+            puts("rm: missing name\n");
+        else
+            fs_remove(cwd, arg);
+    } else if (streq(verb, "echo")) {
+        const char *gt = arg;
+        while (*gt && *gt != '>')
+            gt++;
+        if (*gt == '>') {
+            char text[FS_DATA];
+            char fname[FS_NAME];
+            int t = 0, f = 0;
+            const char *p = arg;
+            while (p < gt) {
+                if (!(*p == ' ' && t == 0) && t < FS_DATA - 1)
+                    text[t++] = *p;
+                p++;
+            }
+            while (t > 0 && text[t - 1] == ' ')
+                t--;
+            text[t] = 0;
+            p = gt + 1;
+            while (*p == ' ')
+                p++;
+            while (*p && *p != ' ' && f < FS_NAME - 1)
+                fname[f++] = *p++;
+            fname[f] = 0;
+            if (!f)
+                puts("echo: missing file name\n");
+            else
+                fs_write(fname, text);
+        } else {
+            puts(arg);
+            putc('\n');
+        }
+    } else if (streq(verb, "uname")) {
+        puts("KotOS 1.0 i386 Multiboot\n");
+    } else if (streq(verb, "whoami")) {
+        puts("root\n");
+    } else if (streq(verb, "free")) {
+        u32 up = 0;
+        if (mb_info)
+            up = *(volatile u32 *)(mb_info + 8);
+        puts("Memory: ");
+        putu(1024 + up);
+        puts(" KB total (from Multiboot)\n");
     } else {
         puts("Unknown command: ");
-        puts(cmd);
+        puts(verb);
         putc('\n');
     }
 }
-
 static void shell(void)
 {
     for (;;) {
@@ -456,6 +736,44 @@ static void draw_cursor(void)
     }
 }
 
+
+static void vga_text_restore(void)
+{
+    static const u8 seq[5] = {0x03, 0x00, 0x03, 0x00, 0x02};
+    static const u8 crtc[25] = {
+        0x5F, 0x4F, 0x50, 0x82, 0x55, 0x81, 0xBF, 0x1F,
+        0x00, 0x4F, 0x0D, 0x0E, 0x00, 0x00, 0x00, 0x00,
+        0x9C, 0x8E, 0x8F, 0x28, 0x1F, 0x96, 0xB9, 0xA3, 0xFF
+    };
+    static const u8 gfx[9] = {0x00, 0x00, 0x00, 0x00, 0x00, 0x10, 0x0E, 0x00, 0xFF};
+    u8 i;
+
+    vbe_w(4, 0);
+    outb(0x3C2, 0x67);
+    for (i = 0; i < 5; i++) {
+        outb(0x3C4, i);
+        outb(0x3C5, seq[i]);
+    }
+    outb(0x3D4, 0x11);
+    outb(0x3D5, 0x0E);
+    for (i = 0; i < 25; i++) {
+        outb(0x3D4, i);
+        outb(0x3D5, crtc[i]);
+    }
+    for (i = 0; i < 9; i++) {
+        outb(0x3CE, i);
+        outb(0x3CF, gfx[i]);
+    }
+    (void)inb(0x3DA);
+    for (i = 0; i < 0x14; i++) {
+        u8 v = i < 0x10 ? i : (i == 0x10 ? 0x0C : (i == 0x11 ? 0x00 : (i == 0x12 ? 0x0F : 0x08)));
+        outb(0x3C0, i);
+        outb(0x3C0, v);
+    }
+    outb(0x3C0, 0x20);
+    vga_clear();
+}
+
 static u8 kbd_scancode(void)
 {
     while (!(inb(0x64) & 1))
@@ -487,8 +805,9 @@ static void gui_run(void)
         else if (e0 && sc == 0x48) ny -= 8;
         else if (e0 && sc == 0x50) ny += 8;
         else if (!e0 && sc == 0x01) {
-            puts("GUI: Esc, halted\n");
-            for (;;) __asm__ volatile("cli; hlt");
+            vga_text_restore();
+            puts("GUI: closed, back to terminal\n");
+            return;
         }
         e0 = 0;
         if (nx != cur_x || ny != cur_y) {
@@ -550,13 +869,10 @@ void kmain(void)
     serial_init();
     vga_clear();
 
+    fs_init();
     splash();
     puts("Type help for a list of commands.\n\n");
     prompt();
-
-    if (gfx_init()) {
-        gui_run();
-    }
 
     shell();
 }
