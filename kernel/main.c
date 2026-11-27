@@ -1545,6 +1545,15 @@ static void mouse_init(void)
     mouse_wait_write(); outb(0x60, st);
     mouse_wait_write(); outb(0x64, 0xD4);
     mouse_wait_write(); outb(0x60, 0xF4);
+    {
+        int guard = 1000;
+        while (guard-- > 0 && (inb(0x64) & 1)) {
+            u8 st = inb(0x64);
+            if (!(st & 0x20))
+                break;
+            (void)inb(0x60);
+        }
+    }
     mouse_cycle = 0;
 }
 
@@ -1558,6 +1567,8 @@ static int mouse_poll(void)
     if (!(st & 0x20))
         return 0;
     d = inb(0x60);
+    if (mouse_cycle == 0 && !(d & 0x08))
+        return 0;
     mouse_pkt[mouse_cycle++] = d;
     if (mouse_cycle < 3)
         return 0;
