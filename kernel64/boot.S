@@ -45,6 +45,7 @@ gdt64:
 .quad 0x00AFFA000000FFFF
 .quad 0
 .quad 0
+.quad 0x00CFFA000000FFFF
 gdt64_end:
 gdt64_ptr:
 .word gdt64_end - gdt64 - 1
@@ -75,6 +76,24 @@ msg_sys:
 .asciz "ring3: int 0x80 works\r\n"
 msg_back:
 .asciz "back in kernel after exit\r\n"
+msg_compat:
+.asciz "compat mode: 32-bit works\r\n"
+compat_stub:
+.code32
+    mov $1, %eax
+    mov $1, %ebx
+    call 1f
+1:  pop %ecx
+    add $(compat_msg - 1b), %ecx
+    mov $28, %edx
+    int $0x81
+    mov $2, %eax
+    int $0x81
+2:  jmp 2b
+compat_msg:
+.ascii "compat mode: int 0x81 works\n"
+compat_stub_end:
+.code64
 .align 8
 user_stub:
 .code64
@@ -429,6 +448,66 @@ sys_exit:
 after_user:
     lea msg_back(%rip), %rsi
     call puts64
-8:
+    call compat_setup
+9:
     hlt
-    jmp 8b
+    jmp 9b
+
+compat_setup:
+    lea idt + 0x810(%rip), %rdi
+    lea compat_int(%rip), %rax
+    mov %eax, %edx
+    mov %dx, 0(%rdi)
+    movw $0x08, 2(%rdi)
+    movb $0, 4(%rdi)
+    movb $0xEE, 5(%rdi)
+    shr $16, %edx
+    mov %dx, 6(%rdi)
+    movl $0, 8(%rdi)
+    movl $0, 12(%rdi)
+
+    lea compat_stub(%rip), %rsi
+    movl $0x400000, %edi
+    movl $(compat_stub_end - compat_stub), %ecx
+    rep movsb
+
+    lea after_compat(%rip), %rax
+    mov %rax, saved_rip(%rip)
+    mov %rsp, saved_rsp(%rip)
+
+    movl $0x5FF000, %eax
+    pushq $0x1B
+    pushq %rax
+    pushq $0x002
+    pushq $0x3B
+    pushq $0x400000
+    iretq
+
+compat_int:
+    cmp $1, %eax
+    je compat_write
+    cmp $2, %eax
+    je sys_exit
+    mov $-1, %eax
+    iretq
+
+compat_write:
+    movl %ecx, %r8d
+    movl %edx, %r9d
+    xor %ecx, %ecx
+1:
+    cmp %r9, %rcx
+    jae 2f
+    movb (%r8,%rcx), %al
+    call putc64
+    inc %rcx
+    jmp 1b
+2:
+    mov %r9, %rax
+    iretq
+
+after_compat:
+    lea msg_compat(%rip), %rsi
+    call puts64
+    hlt
+    jmp after_compat
