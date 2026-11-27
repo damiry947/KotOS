@@ -1658,7 +1658,6 @@ static void scene(void)
     if (wins[0].visible)
         con_redraw();
     draw_clock();
-    cur_saved = 0;
 }
 
 static void taskbar_click(int x, int y)
@@ -1714,13 +1713,13 @@ static void gui_run(void)
 
     for (;;) {
         if (mouse_poll()) {
+            cursor_erase();
             mouse_x += mouse_dx;
             mouse_y -= mouse_dy;
             if (mouse_x < 0) mouse_x = 0;
             if (mouse_y < 0) mouse_y = 0;
             if (mouse_x > (int)fb_w - 1) mouse_x = (int)fb_w - 1;
             if (mouse_y > (int)fb_h - 1) mouse_y = (int)fb_h - 1;
-            cursor_erase();
             if (mouse_buttons & 1) {
                 if (dragging < 0) {
                     int w = hit_window(mouse_x, mouse_y);
