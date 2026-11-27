@@ -33,10 +33,14 @@ user_asm.o: user_asm.S user.bin
 kernel.elf: $(OBJS) linker.ld
 	$(LD) $(LDFLAGS) -o $@ $(OBJS)
 
-run: kernel.elf
-	qemu-system-x86_64 -kernel kernel.elf -m 64 -serial stdio
+run: kernel.elf disk.img
+	qemu-system-x86_64 -kernel kernel.elf -m 64 -serial stdio \
+		-drive file=disk.img,format=raw,if=ide
+
+disk.img:
+	dd if=/dev/zero of=$@ bs=1M count=1 status=none
 
 clean:
-	rm -f $(OBJS) kernel.elf user.bin user/init.o user/init.elf
+	rm -f $(OBJS) kernel.elf user.bin user/init.o user/init.elf disk.img
 
 .PHONY: all run clean

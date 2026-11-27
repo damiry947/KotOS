@@ -31,3 +31,10 @@ kernel/user/init.elf
 
 # проверка страницы
 site/.office-verify/
+
+# диск QEMU
+kernel/disk.img
+
+# x64-ветка
+kernel64/*.o
+kernel64/kernel64.elf

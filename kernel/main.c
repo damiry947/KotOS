@@ -900,7 +900,8 @@ static const char *const known_cmds[] = {
     "stat", "du", "clock", "date", "uptime", "vars", "env", "host",
     "hostname", "me", "id", "ok", "true", "nope", "false", "mem",
     "free", "sysinfo", "uname", "who", "whoami", "history", "which",
-    "sleep", "user", "userspace", "exit", "poweroff", 0
+    "sleep", "user", "userspace", "exit", "poweroff",
+    "disk", "memmap", 0
 };
 
 static void cmd_which(const char *name)
@@ -930,6 +931,177 @@ static void gui_start(void)
     }
 }
 
+
+static inline u16 ata_inw(u16 port)
+{
+    u16 r;
+    __asm__ volatile("inw %1, %0" : "=a"(r) : "Nd"(port));
+    return r;
+}
+
+static u8 ata_status(void)
+{
+    return inb(0x1F7);
+}
+
+static int ata_wait_ready(void)
+{
+    u32 t = 2000000;
+    while (t--) {
+        u8 st = ata_status();
+        if (st == 0xFF)
+            return 0;
+        if (!(st & 0x80)) {
+            if (st & 0x01)
+                return 0;
+            if (st & 0x08)
+                return 1;
+        }
+    }
+    return 0;
+}
+
+static int ata_identify(u16 *id)
+{
+    u32 i;
+    outb(0x1F6, 0xA0);
+    outb(0x1F2, 0);
+    outb(0x1F3, 0);
+    outb(0x1F4, 0);
+    outb(0x1F5, 0);
+    outb(0x1F7, 0xEC);
+    if (!ata_wait_ready())
+        return 0;
+    for (i = 0; i < 256; i++)
+        id[i] = ata_inw(0x1F0);
+    return 1;
+}
+
+static int ata_read28(u32 lba, u16 *buf)
+{
+    u32 i;
+    outb(0x1F6, (u8)(0xE0 | ((lba >> 24) & 0x0F)));
+    outb(0x1F2, 1);
+    outb(0x1F3, (u8)lba);
+    outb(0x1F4, (u8)(lba >> 8));
+    outb(0x1F5, (u8)(lba >> 16));
+    outb(0x1F7, 0x20);
+    if (!ata_wait_ready())
+        return 0;
+    for (i = 0; i < 256; i++)
+        buf[i] = ata_inw(0x1F0);
+    return 1;
+}
+
+static void put_hex2(u8 v)
+{
+    static const char hx[] = "0123456789abcdef";
+    putc(hx[v >> 4]);
+    putc(hx[v & 15]);
+}
+
+static void cmd_disk(void)
+{
+    u16 id[256];
+    u16 sec[256];
+    u32 i, sectors;
+    if (!ata_identify(id)) {
+        puts("диск не найден\n");
+        return;
+    }
+    {
+        char model[41];
+        int n = 0;
+        for (i = 27; i <= 46; i++) {
+            char a = (char)(id[i] >> 8);
+            char b = (char)(id[i] & 0xFF);
+            model[n++] = a ? a : ' ';
+            model[n++] = b ? b : ' ';
+        }
+        model[n] = 0;
+        while (n > 0 && model[n - 1] == ' ')
+            model[--n] = 0;
+        puts("Модель: ");
+        puts(model);
+        putc('\n');
+    }
+    sectors = (u32)id[60] | ((u32)id[61] << 16);
+    puts("Секторов (LBA28): ");
+    putu(sectors);
+    putc('\n');
+    if (!ata_read28(0, sec)) {
+        puts("чтение сектора 0 не удалось\n");
+        return;
+    }
+    puts("Сектор 0: ");
+    for (i = 0; i < 16; i++) {
+        u8 b = (u8)((i & 1) ? (sec[i / 2] >> 8) : (sec[i / 2] & 0xFF));
+        put_hex2(b);
+        putc(' ');
+    }
+    putc('\n');
+    puts("ASCII:   ");
+    for (i = 0; i < 16; i++) {
+        u8 b = (u8)((i & 1) ? (sec[i / 2] >> 8) : (sec[i / 2] & 0xFF));
+        putc((b >= 32 && b < 127) ? (char)b : '.');
+    }
+    putc('\n');
+}
+
+static u32 mmap_total_kb(void)
+{
+    u32 addr, len, p, end, total = 0;
+    if (!mb_info || !(*(volatile u32 *)mb_info & 0x40))
+        return 0;
+    len = *(volatile u32 *)(mb_info + 44);
+    addr = *(volatile u32 *)(mb_info + 48);
+    p = addr;
+    end = addr + len;
+    while (p + 24 <= end) {
+        u32 size = *(volatile u32 *)p;
+        u32 len_lo = *(volatile u32 *)(p + 12);
+        u32 type = *(volatile u32 *)(p + 20);
+        if (type == 1)
+            total += len_lo >> 10;
+        p += size + 4;
+    }
+    return total;
+}
+
+static void cmd_memmap(void)
+{
+    u32 addr, len, p, end;
+    if (!mb_info || !(*(volatile u32 *)mb_info & 0x40)) {
+        puts("карта памяти недоступна\n");
+        return;
+    }
+    len = *(volatile u32 *)(mb_info + 44);
+    addr = *(volatile u32 *)(mb_info + 48);
+    p = addr;
+    end = addr + len;
+    while (p + 24 <= end) {
+        u32 size = *(volatile u32 *)p;
+        u32 base_lo = *(volatile u32 *)(p + 4);
+        u32 len_lo = *(volatile u32 *)(p + 12);
+        u32 type = *(volatile u32 *)(p + 20);
+        if (!len_lo) {
+            p += size + 4;
+            continue;
+        }
+        puts("  база ");
+        putu(base_lo >> 10);
+        puts(" КБ, размер ");
+        putu(len_lo >> 10);
+        puts(" КБ — ");
+        puts(type == 1 ? "доступно" : "зарезервировано");
+        putc('\n');
+        p += size + 4;
+    }
+    puts("Итого доступно: ");
+    putu(mmap_total_kb() / 1024);
+    puts(" МБ\n");
+}
+
 static void run_command(const char *cmd)
 {
     char verb[24], arg1[FS_NAME], arg2[FS_NAME];
@@ -955,6 +1127,7 @@ static void run_command(const char *cmd)
         puts("         which stat du history sleep user exit\n");
         puts("Прочее: os gui install version clear reboot halt\n");
         puts("Установка: install <gui|list>\n");
+        puts("Диск/память: disk, memmap\n");
     } else if (streq(verb, "about")) {
         puts("KotOS — реальная ОС с собственным ядром, без Linux.\n");
     } else if (streq(verb, "os")) {
@@ -1098,9 +1271,12 @@ static void run_command(const char *cmd)
     } else if (streq(verb, "nope") || streq(verb, "false")) {
         return;
     } else if (streq(verb, "mem") || streq(verb, "free")) {
+        u32 total = mmap_total_kb();
         puts("Memory: ");
-        putu(1024 + mem_upper_kb);
-        puts(" KB total (from Multiboot)\n");
+        putu(total ? total : 1024 + mem_upper_kb);
+        puts(" KB total (");
+        puts(total ? "mmap" : "mem_upper");
+        puts(")\n");
     } else if (streq(verb, "sysinfo") || streq(verb, "uname")) {
         puts("KotOS 1.0 i386 Multiboot\n");
     } else if (streq(verb, "who") || streq(verb, "whoami")) {
@@ -1160,6 +1336,10 @@ static void run_command(const char *cmd)
         cmd_which(arg);
     } else if (streq(verb, "sleep")) {
         cmd_sleep(arg);
+    } else if (streq(verb, "disk")) {
+        cmd_disk();
+    } else if (streq(verb, "memmap")) {
+        cmd_memmap();
     } else if (streq(verb, "user") || streq(verb, "userspace") || streq(verb, "ring3")) {
         run_user();
     } else if (streq(verb, "exit") || streq(verb, "poweroff")) {
