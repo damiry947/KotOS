@@ -51,6 +51,11 @@ gdt64_ptr:
 .long gdt64
 
 .section .data
+.align 8
+saved_rip:
+.quad 0
+saved_rsp:
+.quad 0
 .align 4
 ticks:
 .long 0
@@ -68,12 +73,22 @@ msg_pit:
 .asciz "\r\nPIT OK, interrupts work\r\n"
 msg_sys:
 .asciz "ring3: int 0x80 works\r\n"
+msg_back:
+.asciz "back in kernel after exit\r\n"
 .align 8
 user_stub:
 .code64
     mov $1, %eax
+    mov $1, %edi
+    lea umsg(%rip), %rsi
+    mov $28, %edx
+    int $0x80
+    mov $2, %eax
+    xor %edi, %edi
     int $0x80
 1:  jmp 1b
+umsg:
+.ascii "ring3 ABI: write/exit work\n"
 user_stub_end:
 .code32
 
@@ -285,22 +300,31 @@ irq0:
     pop %rax
     iretq
 
+putc64:
+    push %rdx
+    push %rax
+5:
+    movw $0x3FD, %dx
+    in %dx, %al
+    test $0x20, %al
+    jz 5b
+    pop %rax
+    movw $0x3F8, %dx
+    out %al, %dx
+    pop %rdx
+    ret
+
 puts64:
+    push %rsi
 1:
     movb (%rsi), %al
     testb %al, %al
     jz 3f
-2:
-    movw $0x3FD, %dx
-    in %dx, %al
-    test $0x20, %al
-    jz 2b
-    movb (%rsi), %al
-    movw $0x3F8, %dx
-    out %al, %dx
+    call putc64
     inc %rsi
     jmp 1b
 3:
+    pop %rsi
     ret
 
 isr_default:
@@ -356,6 +380,10 @@ ring3_setup:
     movl $(user_stub_end - user_stub), %ecx
     rep movsb
 
+    lea after_user(%rip), %rax
+    mov %rax, saved_rip(%rip)
+    mov %rsp, saved_rsp(%rip)
+
     movl $0x5FF000, %eax
     pushq $0x1B
     pushq %rax
@@ -365,10 +393,41 @@ ring3_setup:
     iretq
 
 int80:
-    push %rax
-    push %rdx
-    push %rsi
-    lea msg_sys(%rip), %rsi
+    cmp $1, %rax
+    je sys_write
+    cmp $2, %rax
+    je sys_exit
+    mov $-1, %rax
+    iretq
+
+sys_write:
+    push %rcx
+    push %r8
+    push %r9
+    mov %rsi, %r8
+    mov %rdx, %r9
+    xor %ecx, %ecx
+1:
+    cmp %r9, %rcx
+    jae 2f
+    movb (%r8,%rcx), %al
+    call putc64
+    inc %rcx
+    jmp 1b
+2:
+    mov %r9, %rax
+    pop %r9
+    pop %r8
+    pop %rcx
+    iretq
+
+sys_exit:
+    mov saved_rsp(%rip), %rsp
+    mov saved_rip(%rip), %rax
+    jmp *%rax
+
+after_user:
+    lea msg_back(%rip), %rsi
     call puts64
 8:
     hlt
