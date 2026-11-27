@@ -1513,6 +1513,15 @@ static struct {
 static void draw_glyph(u32 x, u32 y, u8 code, u32 fg, u32 bg)
 {
     u32 r, b;
+    if (x + 8 <= fb_w && y + 16 <= fb_h) {
+        for (r = 0; r < 16; r++) {
+            u8 bits = font866[(u32)code * 16 + r];
+            u32 *p = (u32 *)((u8 *)fb + (y + r) * fb_pitch) + x;
+            for (b = 0; b < 8; b++)
+                p[b] = (bits & (0x80 >> b)) ? fg : bg;
+        }
+        return;
+    }
     for (r = 0; r < 16; r++) {
         u8 bits = font866[(u32)code * 16 + r];
         for (b = 0; b < 8; b++)
@@ -1835,8 +1844,9 @@ static void scene(void)
     for (y = 0; y < fb_h; y++) {
         u32 t = y * 255 / fb_h;
         u32 c = ((8 + t / 6) << 16) | ((12 + t / 4) << 8) | (24 + t / 3);
+        u32 *row = (u32 *)((u8 *)fb + y * fb_pitch);
         for (x = 0; x < fb_w; x++)
-            px(x, y, c);
+            row[x] = c;
     }
     rect(0, 0, fb_w, 36, 0x141C26);
     rect(0, 36, fb_w, 1, 0x2A3A4A);
@@ -1857,8 +1867,9 @@ static void scene(void)
         rect(wins[i].x + wins[i].w - 24, wins[i].y + 7, 14, 14, 0xF87171);
         if (i == 1) {
             draw_text(wins[1].x + 12, wins[1].y + 44, "KotOS 1.0", 0x22D3EE, 0x0E141B);
-            draw_text(wins[1].x + 12, wins[1].y + 70, "Собственное ядро, без Linux.", 0xE6EDF3, 0x0E141B);
-            draw_text(wins[1].x + 12, wins[1].y + 96, "Ring 3, syscalls, RAMFS, GUI.", 0xE6EDF3, 0x0E141B);
+            draw_text(wins[1].x + 12, wins[1].y + 70, "Своё ядро, без Linux.", 0xE6EDF3, 0x0E141B);
+            draw_text(wins[1].x + 12, wins[1].y + 96, "Ring 3, RAMFS, GUI", 0xE6EDF3, 0x0E141B);
+            draw_text(wins[1].x + 12, wins[1].y + 122, "Окна, мышь, часы", 0xE6EDF3, 0x0E141B);
         }
     }
     if (wins[0].visible)
@@ -1902,14 +1913,14 @@ static int kbd_poll(void)
 static void gui_run(void)
 {
     char line[128];
-    int line_len = 0, dragging = -1, ddx = 0, ddy = 0, last = -1, c;
+    int line_len = 0, dragging = -1, ddx = 0, ddy = 0, last = -1, c, drag_tick = 0;
 
     gui_running = 1;
     wins[0].x = 120; wins[0].y = 80; wins[0].w = 656; wins[0].h = 420;
     wins[0].title = "Терминал"; wins[0].visible = 1;
-    wins[1].x = 420; wins[1].y = 250; wins[1].w = 420; wins[1].h = 200;
-    wins[1].title = "О системе"; wins[1].visible = 0;
-    order[0] = 1; order[1] = 0;
+    wins[1].x = 790; wins[1].y = 120; wins[1].w = 222; wins[1].h = 220;
+    wins[1].title = "О системе"; wins[1].visible = 1;
+    order[0] = 0; order[1] = 1;
 
     mouse_init();
     console_setup(wins[0].x + 8, wins[0].y + 32, 80, 24);
@@ -1949,10 +1960,12 @@ static void gui_run(void)
                         con.ox = wins[0].x + 8;
                         con.oy = wins[0].y + 32;
                     }
-                    scene();
+                    if ((++drag_tick & 3) == 0)
+                        scene();
                 }
-            } else {
+            } else if (dragging >= 0) {
                 dragging = -1;
+                scene();
             }
             cursor_draw();
         }
