@@ -737,42 +737,6 @@ static void draw_cursor(void)
 }
 
 
-static void vga_text_restore(void)
-{
-    static const u8 seq[5] = {0x03, 0x00, 0x03, 0x00, 0x02};
-    static const u8 crtc[25] = {
-        0x5F, 0x4F, 0x50, 0x82, 0x55, 0x81, 0xBF, 0x1F,
-        0x00, 0x4F, 0x0D, 0x0E, 0x00, 0x00, 0x00, 0x00,
-        0x9C, 0x8E, 0x8F, 0x28, 0x1F, 0x96, 0xB9, 0xA3, 0xFF
-    };
-    static const u8 gfx[9] = {0x00, 0x00, 0x00, 0x00, 0x00, 0x10, 0x0E, 0x00, 0xFF};
-    u8 i;
-
-    vbe_w(4, 0);
-    outb(0x3C2, 0x67);
-    for (i = 0; i < 5; i++) {
-        outb(0x3C4, i);
-        outb(0x3C5, seq[i]);
-    }
-    outb(0x3D4, 0x11);
-    outb(0x3D5, 0x0E);
-    for (i = 0; i < 25; i++) {
-        outb(0x3D4, i);
-        outb(0x3D5, crtc[i]);
-    }
-    for (i = 0; i < 9; i++) {
-        outb(0x3CE, i);
-        outb(0x3CF, gfx[i]);
-    }
-    (void)inb(0x3DA);
-    for (i = 0; i < 0x14; i++) {
-        u8 v = i < 0x10 ? i : (i == 0x10 ? 0x0C : (i == 0x11 ? 0x00 : (i == 0x12 ? 0x0F : 0x08)));
-        outb(0x3C0, i);
-        outb(0x3C0, v);
-    }
-    outb(0x3C0, 0x20);
-    vga_clear();
-}
 
 static u8 kbd_scancode(void)
 {
@@ -805,9 +769,9 @@ static void gui_run(void)
         else if (e0 && sc == 0x48) ny -= 8;
         else if (e0 && sc == 0x50) ny += 8;
         else if (!e0 && sc == 0x01) {
-            vga_text_restore();
-            puts("GUI: closed, back to terminal\n");
-            return;
+            puts("GUI: Esc, halted\n");
+            for (;;)
+                __asm__ volatile("cli; hlt");
         }
         e0 = 0;
         if (nx != cur_x || ny != cur_y) {
