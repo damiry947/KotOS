@@ -68,6 +68,13 @@ static int fb_init(void)
     return 1;
 }
 
+static u32 px_get(u32 x, u32 y)
+{
+    if (x < fw && y < fh)
+        return fb[(y * pitch + x * 4) / 4];
+    return 0;
+}
+
 static void px(u32 x, u32 y, u32 c)
 {
     if (x < fw && y < fh)
@@ -82,14 +89,157 @@ static void rect(u32 x, u32 y, u32 w, u32 h, u32 c)
             px(x + i, y + j, c);
 }
 
-static void glyph(u32 x, u32 y, u8 code)
+static void glyph_c(u32 x, u32 y, u8 code, u32 f, u32 b)
 {
-    u32 r, b;
+    u32 r, i;
     for (r = 0; r < 16; r++) {
         u8 bits = font866[(u32)code * 16 + r];
-        for (b = 0; b < 8; b++)
-            px(x + b, y + r, (bits & (0x80 >> b)) ? fg : bg);
+        for (i = 0; i < 8; i++)
+            px(x + i, y + r, (bits & (0x80 >> i)) ? f : b);
     }
+}
+
+static void glyph(u32 x, u32 y, u8 code)
+{
+    glyph_c(x, y, code, fg, bg);
+}
+
+static void draw_text(u32 x, u32 y, const char *s, u32 f, u32 b)
+{
+    u32 i = 0;
+    while (*s) {
+        glyph_c(x + i * 8, y, (u8)*s++, f, b);
+        i++;
+    }
+}
+
+static u8 cmos_read(u8 r)
+{
+    outb(0x70, r);
+    return inb(0x71);
+}
+
+static u8 bcd2(u8 v)
+{
+    return (u8)((v >> 4) * 10 + (v & 15));
+}
+
+static u32 read_secs(void)
+{
+    u8 h = cmos_read(0x04), m = cmos_read(0x02), sec = cmos_read(0x00);
+    u8 b = cmos_read(0x0B);
+    if (!(b & 0x04)) { h = bcd2(h); m = bcd2(m); sec = bcd2(sec); }
+    return (u32)h * 3600 + m * 60 + sec;
+}
+
+static void draw_clock(void);
+static void draw_panel(void);
+
+static void draw_panel(void)
+{
+    rect(0, 0, fw, 36, 0x141C26);
+    draw_text(16, 10, "KotOS x64", 0x22D3EE, 0x141C26);
+    draw_text(120, 10, "мой терминал", 0x93A1AA, 0x141C26);
+    draw_clock();
+}
+
+static void draw_clock(void)
+{
+    u8 h = cmos_read(0x04), m = cmos_read(0x02), sec = cmos_read(0x00);
+    u8 b = cmos_read(0x0B);
+    char t[9];
+    if (!(b & 0x04)) { h = bcd2(h); m = bcd2(m); sec = bcd2(sec); }
+    t[0] = (char)('0' + h / 10); t[1] = (char)('0' + h % 10); t[2] = ':';
+    t[3] = (char)('0' + m / 10); t[4] = (char)('0' + m % 10); t[5] = ':';
+    t[6] = (char)('0' + sec / 10); t[7] = (char)('0' + sec % 10); t[8] = 0;
+    rect(fw - 96, 4, 88, 28, 0x141C26);
+    draw_text(fw - 88, 10, t, 0x9FB3C8, 0x141C26);
+}
+
+static int mouse_cycle, mouse_buttons, mouse_dx, mouse_dy;
+static u8 mouse_pkt[3];
+static int mx = 512, my = 384;
+static u32 cbg[19][12];
+static int csaved;
+
+static const unsigned char cursor_bmp_local[19][12] = {
+    {1,0,0,0,0,0,0,0,0,0,0,0},{1,1,0,0,0,0,0,0,0,0,0,0},
+    {1,0,1,0,0,0,0,0,0,0,0,0},{1,0,0,1,0,0,0,0,0,0,0,0},
+    {1,0,0,0,1,0,0,0,0,0,0,0},{1,0,0,0,0,1,0,0,0,0,0,0},
+    {1,0,0,0,0,0,1,0,0,0,0,0},{1,0,0,0,0,0,0,1,0,0,0,0},
+    {1,0,0,0,0,0,0,0,1,0,0,0},{1,0,0,0,0,0,0,0,0,1,0,0},
+    {1,0,0,0,0,0,0,0,0,0,1,0},{1,0,0,0,0,0,1,1,1,1,1,0},
+    {1,0,0,0,1,0,1,0,0,0,0,0},{1,0,0,1,0,1,0,1,0,0,0,0},
+    {1,0,1,0,0,1,0,1,0,0,0,0},{1,1,0,0,0,0,1,0,1,0,0,0},
+    {1,0,0,0,0,0,1,0,1,0,0,0},{0,0,0,0,0,0,0,1,0,1,0,0},
+    {0,0,0,0,0,0,0,1,0,1,0,0}
+};
+
+static void cursor_draw(void)
+{
+    int j, i;
+    for (j = 0; j < 19; j++)
+        for (i = 0; i < 12; i++)
+            cbg[j][i] = px_get((u32)(mx + i - 1), (u32)(my + j - 1));
+    for (j = 0; j < 19; j++)
+        for (i = 0; i < 12; i++) {
+            if (!cursor_bmp_local[j][i]) continue;
+            px((u32)(mx + i - 1), (u32)(my + j - 1), 0x000000);
+            px((u32)(mx + i), (u32)(my + j), 0xFFFFFF);
+        }
+    csaved = 1;
+}
+
+static void cursor_erase(void)
+{
+    int j, i;
+    if (!csaved) return;
+    for (j = 0; j < 19; j++)
+        for (i = 0; i < 12; i++)
+            px((u32)(mx + i - 1), (u32)(my + j - 1), cbg[j][i]);
+    csaved = 0;
+}
+
+static void mouse_init(void)
+{
+    u8 st;
+    int t;
+    for (t = 0; t < 100000 && (inb(0x64) & 2); t++) ;
+    outb(0x64, 0xA8);
+    for (t = 0; t < 100000 && (inb(0x64) & 2); t++) ;
+    outb(0x64, 0x20);
+    for (t = 0; t < 100000 && !(inb(0x64) & 1); t++) ;
+    st = inb(0x60);
+    st |= 0x02; st &= (u8)~0x20;
+    for (t = 0; t < 100000 && (inb(0x64) & 2); t++) ;
+    outb(0x64, 0x60);
+    for (t = 0; t < 100000 && (inb(0x64) & 2); t++) ;
+    outb(0x60, st);
+    for (t = 0; t < 100000 && (inb(0x64) & 2); t++) ;
+    outb(0x64, 0xD4);
+    for (t = 0; t < 100000 && (inb(0x64) & 2); t++) ;
+    outb(0x60, 0xF4);
+    mouse_cycle = 0;
+}
+
+static int mouse_poll(void)
+{
+    u8 st, d;
+    int dx, dy;
+    if (!(inb(0x64) & 1)) return 0;
+    st = inb(0x64);
+    if (!(st & 0x20)) return 0;
+    d = inb(0x60);
+    if (mouse_cycle == 0 && !(d & 0x08)) return 0;
+    mouse_pkt[mouse_cycle++] = d;
+    if (mouse_cycle < 3) return 0;
+    mouse_cycle = 0;
+    dx = mouse_pkt[1]; dy = mouse_pkt[2];
+    if (mouse_pkt[0] & 0x10) dx -= 256;
+    if (mouse_pkt[0] & 0x20) dy -= 256;
+    mouse_dx = dx; mouse_dy = dy;
+    mouse_buttons = mouse_pkt[0] & 7;
+    return 1;
 }
 
 static u8 cp866(u32 cp)
@@ -112,6 +262,7 @@ static void scroll(void)
             dst[i] = src[i];
     }
     rect(0, fh - 16, fw, 16, bg);
+    draw_panel();
 }
 
 static void putc_c(u8 c)
@@ -391,14 +542,33 @@ void kmain64(void)
         for (;;) __asm__ volatile("hlt");
     }
     clear_screen();
-    cx = 4; cy = 2;
+    draw_panel();
+    mouse_init();
+    cursor_draw();
+    cx = 4; cy = 3;
     puts_c("KotOS x64\n");
     puts_c("Framebuffer console works\n");
     puts_c("Консоль x64 работает\n\n");
     puts_c("Введите help.\n\n");
     puts_c("x64> ");
 
-    for (;;) {
+    {
+        int last = -1;
+        for (;;) {
+        if (mouse_poll()) {
+            cursor_erase();
+            mx += mouse_dx;
+            my -= mouse_dy;
+            if (mx < 0) mx = 0;
+            if (my < 0) my = 0;
+            if (mx > (int)fw - 1) mx = (int)fw - 1;
+            if (my > (int)fh - 1) my = (int)fh - 1;
+            cursor_draw();
+        }
+        {
+            int sec = (int)read_secs();
+            if (sec != last) { last = sec; draw_clock(); }
+        }
         c = kbd_poll();
         if (c < 0)
             continue;
@@ -415,6 +585,7 @@ void kmain64(void)
             line[n++] = (char)c;
             putc_c((u8)c);
             sport((char)c);
+        }
         }
     }
 }
