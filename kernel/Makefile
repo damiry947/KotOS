@@ -1,5 +1,6 @@
 CC := gcc
 LD := ld
+OBJCOPY := objcopy
 
 CFLAGS := -m32 -std=gnu11 -ffreestanding -fno-pie -fno-pic \
           -fno-stack-protector -fno-builtin -mno-sse -mno-mmx -msoft-float \
@@ -7,7 +8,7 @@ CFLAGS := -m32 -std=gnu11 -ffreestanding -fno-pie -fno-pic \
 
 LDFLAGS := -m elf_i386 -T linker.ld -nostdlib -z noexecstack
 
-OBJS := boot.o main.o
+OBJS := boot.o main.o user_asm.o
 
 all: kernel.elf
 
@@ -17,6 +18,18 @@ all: kernel.elf
 %.o: %.S
 	$(CC) -m32 -c $< -o $@
 
+user/init.o: user/init.c
+	$(CC) $(CFLAGS) -c $< -o $@
+
+user/init.elf: user/init.o user/linker.ld
+	$(LD) -m elf_i386 -T user/linker.ld -nostdlib -o $@ user/init.o
+
+user.bin: user/init.elf
+	$(OBJCOPY) -O binary $< $@
+
+user_asm.o: user_asm.S user.bin
+	$(CC) -m32 -c $< -o $@
+
 kernel.elf: $(OBJS) linker.ld
 	$(LD) $(LDFLAGS) -o $@ $(OBJS)
 
@@ -24,6 +37,6 @@ run: kernel.elf
 	qemu-system-x86_64 -kernel kernel.elf -m 64 -serial stdio
 
 clean:
-	rm -f $(OBJS) kernel.elf
+	rm -f $(OBJS) kernel.elf user.bin user/init.o user/init.elf
 
 .PHONY: all run clean

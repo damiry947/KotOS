@@ -120,6 +120,7 @@ static void putu(u32 v)
 }
 
 static void splash(void);
+static void run_user(void);
 static int gfx_init(void);
 static void gui_run(void);
 
@@ -202,6 +203,7 @@ static void splash(void)
 static char hist[8][64];
 static int hist_n = 0;
 static u32 boot_sec = 0;
+static u32 mem_upper_kb;
 
 static char line[128];
 static int line_len = 0;
@@ -843,7 +845,7 @@ static const char *const known_cmds[] = {
     "stat", "du", "clock", "date", "uptime", "vars", "env", "host",
     "hostname", "me", "id", "ok", "true", "nope", "false", "mem",
     "free", "sysinfo", "uname", "who", "whoami", "history", "which",
-    "sleep", "exit", "poweroff", 0
+    "sleep", "user", "userspace", "exit", "poweroff", 0
 };
 
 static void cmd_which(const char *name)
@@ -861,7 +863,7 @@ static void cmd_which(const char *name)
 
 static void run_command(const char *cmd)
 {
-    char verb[24], arg1[FS_NAME], arg2[FS_NAME], rest[FS_DATA];
+    char verb[24], arg1[FS_NAME], arg2[FS_NAME];
     const char *arg, *p;
     int i = 0, n = 0;
 
@@ -880,7 +882,7 @@ static void run_command(const char *cmd)
         puts("Core: look go where newdir newfile show say del copy move dropdir rename append\n");
         puts("Text: top bottom count findtext sort rev hex seq find tree\n");
         puts("Sys:  clock uptime vars host me ok nope mem sysinfo who which stat du\n");
-        puts("More: history sleep exit os install gui version clear reboot halt\n");
+        puts("More: history sleep user exit os install gui version clear reboot halt\n");
     } else if (streq(verb, "about")) {
         puts("KotOS is a real operating system with its own kernel, no Linux.\n");
     } else if (streq(verb, "os")) {
@@ -1014,11 +1016,8 @@ static void run_command(const char *cmd)
     } else if (streq(verb, "nope") || streq(verb, "false")) {
         return;
     } else if (streq(verb, "mem") || streq(verb, "free")) {
-        u32 up = 0;
-        if (mb_info)
-            up = *(volatile u32 *)(mb_info + 8);
         puts("Memory: ");
-        putu(1024 + up);
+        putu(1024 + mem_upper_kb);
         puts(" KB total (from Multiboot)\n");
     } else if (streq(verb, "sysinfo") || streq(verb, "uname")) {
         puts("KotOS 1.0 i386 Multiboot\n");
@@ -1079,6 +1078,8 @@ static void run_command(const char *cmd)
         cmd_which(arg);
     } else if (streq(verb, "sleep")) {
         cmd_sleep(arg);
+    } else if (streq(verb, "user") || streq(verb, "userspace") || streq(verb, "ring3")) {
+        run_user();
     } else if (streq(verb, "exit") || streq(verb, "poweroff")) {
         puts("Bye.\n");
         for (;;)
@@ -1368,6 +1369,194 @@ static void puthex(u32 v)
         putc(h[(v >> i) & 15]);
 }
 
+
+struct regs {
+    u32 edi, esi, ebp, esp, ebx, edx, ecx, eax;
+};
+
+struct gdt_entry {
+    u16 limit_low;
+    u16 base_low;
+    u8 base_mid;
+    u8 access;
+    u8 gran;
+    u8 base_high;
+} __attribute__((packed));
+
+struct gdt_ptr {
+    u16 limit;
+    u32 base;
+} __attribute__((packed));
+
+struct idt_entry {
+    u16 off_low;
+    u16 sel;
+    u8 zero;
+    u8 type;
+    u16 off_high;
+} __attribute__((packed));
+
+struct idt_ptr {
+    u16 limit;
+    u32 base;
+} __attribute__((packed));
+
+struct tss {
+    u32 prev;
+    u32 esp0, ss0, esp1, ss1, esp2, ss2, cr3, eip, eflags;
+    u32 eax, ecx, edx, ebx, esp, ebp, esi, edi;
+    u32 es, cs, ss, ds, fs, gs, ldt;
+    u16 trap, iomap;
+} __attribute__((packed));
+
+extern void gdt_load(struct gdt_ptr *);
+extern void tss_load(void);
+extern void idt_load(struct idt_ptr *);
+extern void enter_user(u32 entry, u32 stack);
+extern void user_exit(void);
+extern void isr80_stub(void);
+extern void isr_default(void);
+extern u8 user_blob_start[], user_blob_end[];
+
+static struct gdt_entry gdt[6];
+static struct gdt_ptr gp;
+static struct tss tss;
+static u8 kstack[8192] __attribute__((aligned(16)));
+
+static u32 pgdir[1024] __attribute__((aligned(4096)));
+static u32 pt_kernel[1024] __attribute__((aligned(4096)));
+static u32 pt_user[1024] __attribute__((aligned(4096)));
+static u32 pt_lfb_e[1024] __attribute__((aligned(4096)));
+static u32 pt_lfb_f[1024] __attribute__((aligned(4096)));
+static int paging_enabled;
+
+void exception_panic(void)
+{
+    puts("\nKERNEL EXCEPTION - halted\n");
+    for (;;)
+        __asm__ volatile("cli; hlt");
+}
+
+void syscall_handler(struct regs *r)
+{
+    switch (r->eax) {
+    case 1: {
+        const char *p = (const char *)r->ecx;
+        u32 n = r->edx, i;
+        for (i = 0; i < n && p[i]; i++)
+            putc(p[i]);
+        r->eax = n;
+        break;
+    }
+    case 2:
+        user_exit();
+        break;
+    case 3:
+        r->eax = (u32)kbd_getc();
+        break;
+    default:
+        r->eax = (u32)-1;
+        break;
+    }
+}
+
+static void gdt_set(int i, u32 base, u32 limit, u8 access, u8 gran)
+{
+    gdt[i].base_low = (u16)(base & 0xFFFF);
+    gdt[i].base_mid = (u8)((base >> 16) & 0xFF);
+    gdt[i].base_high = (u8)((base >> 24) & 0xFF);
+    gdt[i].limit_low = (u16)(limit & 0xFFFF);
+    gdt[i].gran = (u8)(((limit >> 16) & 0x0F) | (gran & 0xF0));
+    gdt[i].access = access;
+}
+
+static void kernel_gdt_init(void)
+{
+    u32 i;
+    gdt_set(0, 0, 0, 0, 0);
+    gdt_set(1, 0, 0xFFFFF, 0x9A, 0xCF);
+    gdt_set(2, 0, 0xFFFFF, 0x92, 0xCF);
+    gdt_set(3, 0, 0xFFFFF, 0xFA, 0xCF);
+    gdt_set(4, 0, 0xFFFFF, 0xF2, 0xCF);
+
+    for (i = 0; i < sizeof(tss); i++)
+        ((u8 *)&tss)[i] = 0;
+    tss.ss0 = 0x10;
+    tss.esp0 = (u32)kstack + sizeof(kstack);
+    tss.iomap = sizeof(tss);
+
+    gdt_set(5, (u32)&tss, sizeof(tss) - 1, 0x89, 0x00);
+    gp.limit = sizeof(gdt) - 1;
+    gp.base = (u32)gdt;
+    gdt_load(&gp);
+    tss_load();
+}
+
+static struct idt_entry idt[256];
+static struct idt_ptr idtp;
+
+static void idt_set(int i, u32 handler, u8 type)
+{
+    idt[i].off_low = (u16)(handler & 0xFFFF);
+    idt[i].off_high = (u16)((handler >> 16) & 0xFFFF);
+    idt[i].sel = 0x08;
+    idt[i].zero = 0;
+    idt[i].type = type;
+}
+
+static void kernel_idt_init(void)
+{
+    int i;
+    for (i = 0; i < 256; i++)
+        idt_set(i, (u32)isr_default, 0x8E);
+    idt_set(0x80, (u32)isr80_stub, 0xEE);
+    idtp.limit = sizeof(idt) - 1;
+    idtp.base = (u32)idt;
+    idt_load(&idtp);
+}
+
+static void paging_init(void)
+{
+    u32 i, cr0;
+    for (i = 0; i < 1024; i++) {
+        pt_kernel[i] = i * 0x1000 | 3;
+        pt_user[i] = (0x400000 + i * 0x1000) | 7;
+        pt_lfb_e[i] = (0xE0000000 + i * 0x1000) | 3;
+        pt_lfb_f[i] = (0xFD000000 + i * 0x1000) | 3;
+    }
+    for (i = 0; i < 1024; i++)
+        pgdir[i] = 0;
+    pgdir[0] = (u32)pt_kernel | 3;
+    pgdir[1] = (u32)pt_user | 7;
+    pgdir[0xE0000000u >> 22] = (u32)pt_lfb_e | 3;
+    pgdir[0xFD000000u >> 22] = (u32)pt_lfb_f | 3;
+    __asm__ volatile("mov %0, %%cr3" : : "r"((u32)pgdir) : "memory");
+    __asm__ volatile("mov %%cr0, %0" : "=r"(cr0));
+    cr0 |= 0x80000000u;
+    __asm__ volatile("mov %0, %%cr0" : : "r"(cr0) : "memory");
+    paging_enabled = 1;
+}
+
+static void run_user(void)
+{
+    u32 len = (u32)(user_blob_end - user_blob_start);
+    u32 i;
+    u8 *dst = (u8 *)0x400000;
+    if (!paging_enabled) {
+        puts("user: paging is off\n");
+        return;
+    }
+    if (!len || len > 0x3F0000) {
+        puts("user: bad program size\n");
+        return;
+    }
+    for (i = 0; i < len; i++)
+        dst[i] = user_blob_start[i];
+    puts("Ring 3 program at 0x400000. Enter to exit.\n");
+    enter_user(0x400000, 0x7FF000);
+    puts("User program exited, back to kernel.\n");
+}
+
 void kmain(void)
 {
     serial_init();
@@ -1407,6 +1596,11 @@ void kmain(void)
 
     fs_init();
     boot_sec = read_time_secs();
+    if (mb_info)
+        mem_upper_kb = *(volatile u32 *)(mb_info + 8);
+    kernel_gdt_init();
+    kernel_idt_init();
+    paging_init();
     splash();
     puts("Type help for a list of commands.\n\n");
     prompt();
