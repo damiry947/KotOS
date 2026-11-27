@@ -7,9 +7,10 @@
 - загрузка через Multiboot в QEMU;
 - собственный вывод в VGA-текст 80×25 и в последовательный порт COM1;
 - обработка клавиатуры (PS/2, скан-код set 1, Shift);
-- мини-шелл: `help`, `about`, `version`, `clear`, `reboot`, `halt`;
+- мини-шелл: `help`, `about`, `os`, `version`, `clear`, `reboot`, `halt`;
 - собственная графика: Bochs VBE 1024×768×32, LFB через PCI BAR0;
 - рабочий стол, верхняя панель, окно с заголовком и кнопками, курсор мыши (стрелки);
+- экран приветствия в стиле fastfetch: кот, `damir@kotos`, версия, ядро и шелл;
 - сборка без libc: `gcc -m32 -ffreestanding`, свой линкер-скрипт.
 
 ## Сборка и запуск
@@ -30,7 +31,7 @@ make
 qemu-system-x86_64 -kernel kernel.elf -m 64
 ```
 
-Скриншоты: `docs/screenshot.png` (GUI), `docs/screenshot-text.png` (консоль).
+Скриншоты: `docs/screenshot.png` (GUI), `docs/screenshot-splash.png` (приветствие), `docs/screenshot-text.png` (консоль).
 
 ## Структура
 
@@ -56,6 +57,14 @@ docs/         — скриншоты
 ## Лицензия
 
 GPL-3.0 — см. `LICENSE`.
+
+## Скрипт для хоста
+
+`tools/os` печатает такой же экран приветствия в терминале Linux Mint:
+
+```sh
+~/kotos/tools/os
+```
 
 ## Управление
 

@@ -168,6 +168,33 @@ static char kbd_getc(void)
     }
 }
 
+
+static void cputs(u8 attr, const char *s)
+{
+    vga_set_attr(attr);
+    puts(s);
+}
+
+static void splash(void)
+{
+    putc('\n');
+    cputs(0x0E, "   /\\_/\\     ");
+    cputs(0x0B, "damir@kotos\n");
+    cputs(0x0E, "  ( o.o )    ");
+    cputs(0x08, "-----------------\n");
+    cputs(0x0E, "   > ^ <     ");
+    cputs(0x0A, "OS     ");
+    cputs(0x07, "KotOS 1.0\n");
+    cputs(0x0E, "             ");
+    cputs(0x0A, "Kernel ");
+    cputs(0x07, "native x86 (Multiboot)\n");
+    cputs(0x0E, "             ");
+    cputs(0x0A, "Shell  ");
+    cputs(0x07, "kotos-sh\n");
+    vga_set_attr(0x07);
+    putc('\n');
+}
+
 static char line[128];
 static int line_len = 0;
 
@@ -191,9 +218,11 @@ static void run_command(const char *cmd)
     if (!*cmd)
         return;
     if (streq(cmd, "help")) {
-        puts("Commands: help, about, version, clear, reboot, halt\n");
+        puts("Commands: help, about, os, version, clear, reboot, halt\n");
     } else if (streq(cmd, "about")) {
         puts("KotOS is a hobby OS with its own kernel, no Linux.\n");
+    } else if (streq(cmd, "os")) {
+        splash();
     } else if (streq(cmd, "version")) {
         puts("KotOS native kernel 1.0 (x86, Multiboot)\n");
     } else if (streq(cmd, "clear")) {
@@ -521,10 +550,7 @@ void kmain(void)
     serial_init();
     vga_clear();
 
-    vga_set_attr(0x0B);
-    puts("  KotOS v1.0 - native kernel\n");
-    vga_set_attr(0x07);
-    puts("  x86, Multiboot, no Linux\n\n");
+    splash();
     puts("Type help for a list of commands.\n\n");
     prompt();
 

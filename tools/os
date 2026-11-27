@@ -1,0 +1,7 @@
+#!/bin/sh
+
+printf '   /\\_/\\     \033[36mdamir@damir-linux\033[0m\n'
+printf '  ( o.o )    \033[90m-----------------\033[0m\n'
+printf '   > ^ <     \033[32mOS\033[0m     KotOS 1.0\n'
+printf '             \033[32mKernel\033[0m KotOS 1.0 (native x86, Multiboot)\n'
+printf '             \033[32mShell\033[0m  kotos-sh\n'
