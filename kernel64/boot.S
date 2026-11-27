@@ -111,6 +111,12 @@ umsg:
 user_stub_end:
 .code32
 
+.section .rodata
+.align 16
+payload_start:
+.incbin "payload.bin"
+payload_end:
+
 .section .text
 .code32
 .global _start
@@ -509,5 +515,13 @@ compat_write:
 after_compat:
     lea msg_compat(%rip), %rsi
     call puts64
+
+    lea payload_start(%rip), %rsi
+    movl $0x200000, %edi
+    movl $(payload_end - payload_start), %ecx
+    rep movsb
+    movl $0x200000, %eax
+    call *%rax
+1:
     hlt
-    jmp after_compat
+    jmp 1b
