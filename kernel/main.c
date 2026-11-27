@@ -406,10 +406,248 @@ static void fs_write(const char *name, const char *text)
         fs[idx].size++;
 }
 
+
+static int take_token(const char **pp, char *out, int max)
+{
+    const char *p = *pp;
+    int n = 0;
+    while (*p == ' ')
+        p++;
+    if (!*p) {
+        out[0] = 0;
+        return 0;
+    }
+    while (*p && *p != ' ' && n < max - 1)
+        out[n++] = *p++;
+    out[n] = 0;
+    *pp = p;
+    return 1;
+}
+
+static int str_contains(const char *hay, const char *needle)
+{
+    int i, j;
+    if (!*needle)
+        return 1;
+    for (i = 0; hay[i]; i++) {
+        for (j = 0; needle[j] && hay[i + j] == needle[j]; j++)
+            ;
+        if (!needle[j])
+            return 1;
+    }
+    return 0;
+}
+
+static void fs_copy_file(const char *src, const char *dst)
+{
+    int si = fs_find(cwd, src), di;
+    if (si < 0 || fs[si].is_dir) {
+        puts("copy: no such file\n");
+        return;
+    }
+    di = fs_find(cwd, dst);
+    if (di < 0)
+        di = fs_create(cwd, dst, 0);
+    if (di < 0) {
+        puts("copy: cannot create target\n");
+        return;
+    }
+    if (fs[di].is_dir) {
+        puts("copy: target is a directory\n");
+        return;
+    }
+    str_copy(fs[di].data, fs[si].data, FS_DATA);
+    fs[di].size = fs[si].size;
+}
+
+static void fs_move_file(const char *src, const char *dst)
+{
+    int si = fs_find(cwd, src), di;
+    if (si < 0 || fs[si].is_dir) {
+        puts("move: no such file\n");
+        return;
+    }
+    if (streq(src, dst))
+        return;
+    di = fs_find(cwd, dst);
+    if (di < 0)
+        di = fs_create(cwd, dst, 0);
+    if (di < 0 || fs[di].is_dir) {
+        puts("move: cannot create target\n");
+        return;
+    }
+    str_copy(fs[di].data, fs[si].data, FS_DATA);
+    fs[di].size = fs[si].size;
+    fs[si].used = 0;
+}
+
+static void fs_append_file(const char *name, const char *text)
+{
+    int idx = fs_find(cwd, name);
+    u32 pos;
+    if (idx < 0)
+        idx = fs_create(cwd, name, 0);
+    if (idx < 0 || fs[idx].is_dir) {
+        puts("say: cannot write\n");
+        return;
+    }
+    pos = fs[idx].size;
+    if (pos && fs[idx].data[pos - 1] != '\n' && pos < FS_DATA - 1)
+        fs[idx].data[pos++] = '\n';
+    while (*text && pos < FS_DATA - 1)
+        fs[idx].data[pos++] = *text++;
+    fs[idx].data[pos] = 0;
+    fs[idx].size = pos;
+}
+
+static int line_copy(const char *data, int *pos, char *out, int max)
+{
+    int n = 0, p = *pos;
+    if (!data[p])
+        return 0;
+    while (data[p] && data[p] != '\n' && n < max - 1)
+        out[n++] = data[p++];
+    out[n] = 0;
+    if (data[p] == '\n')
+        p++;
+    *pos = p;
+    return 1;
+}
+
+static int fs_file_index(const char *name)
+{
+    int idx = fs_find(cwd, name);
+    if (idx < 0 || fs[idx].is_dir) {
+        puts("no such file\n");
+        return -1;
+    }
+    return idx;
+}
+
+static void cmd_head(const char *name)
+{
+    int idx = fs_file_index(name);
+    char buf[FS_DATA];
+    int pos = 0, k = 0;
+    if (idx < 0)
+        return;
+    while (k < 10 && line_copy(fs[idx].data, &pos, buf, FS_DATA)) {
+        puts(buf);
+        putc('\n');
+        k++;
+    }
+}
+
+static void cmd_tail(const char *name)
+{
+    int idx = fs_file_index(name);
+    char buf[FS_DATA];
+    int pos = 0, total = 0, skip;
+    if (idx < 0)
+        return;
+    while (line_copy(fs[idx].data, &pos, buf, FS_DATA))
+        total++;
+    skip = total > 10 ? total - 10 : 0;
+    pos = 0;
+    while (line_copy(fs[idx].data, &pos, buf, FS_DATA)) {
+        if (skip > 0) {
+            skip--;
+            continue;
+        }
+        puts(buf);
+        putc('\n');
+    }
+}
+
+static void cmd_count(const char *name)
+{
+    int idx = fs_file_index(name);
+    u32 i, lines = 0, words = 0, bytes;
+    int in_word = 0;
+    if (idx < 0)
+        return;
+    bytes = fs[idx].size;
+    for (i = 0; i < bytes; i++) {
+        char c = fs[idx].data[i];
+        if (c == '\n')
+            lines++;
+        if (c == ' ' || c == '\n' || c == '\t') {
+            in_word = 0;
+        } else if (!in_word) {
+            in_word = 1;
+            words++;
+        }
+    }
+    if (bytes && fs[idx].data[bytes - 1] != '\n')
+        lines++;
+    putu(lines);
+    putc(' ');
+    putu(words);
+    putc(' ');
+    putu(bytes);
+    puts(" lines words bytes\n");
+}
+
+static void cmd_grep(const char *pattern, const char *name)
+{
+    int idx = fs_file_index(name);
+    char buf[FS_DATA];
+    int pos = 0;
+    if (idx < 0)
+        return;
+    while (line_copy(fs[idx].data, &pos, buf, FS_DATA)) {
+        if (str_contains(buf, pattern)) {
+            puts(buf);
+            putc('\n');
+        }
+    }
+}
+
+static u8 cmos_read(u8 reg)
+{
+    outb(0x70, reg);
+    return inb(0x71);
+}
+
+static u8 from_bcd(u8 v)
+{
+    return (u8)((v >> 4) * 10 + (v & 0x0F));
+}
+
+static void print2(u32 v)
+{
+    putc((char)('0' + (v / 10) % 10));
+    putc((char)('0' + v % 10));
+}
+
+static void cmd_clock(void)
+{
+    u8 sec = cmos_read(0x00), min = cmos_read(0x02), hour = cmos_read(0x04);
+    u8 day = cmos_read(0x07), mon = cmos_read(0x08), year = cmos_read(0x09);
+    u8 b = cmos_read(0x0B);
+    if (!(b & 0x04)) {
+        sec = from_bcd(sec); min = from_bcd(min); hour = from_bcd(hour);
+        day = from_bcd(day); mon = from_bcd(mon); year = from_bcd(year);
+    }
+    puts("20");
+    print2(year);
+    putc('-');
+    print2(mon);
+    putc('-');
+    print2(day);
+    putc(' ');
+    print2(hour);
+    putc(':');
+    print2(min);
+    putc(':');
+    print2(sec);
+    putc('\n');
+}
+
 static void run_command(const char *cmd)
 {
-    char verb[24];
-    const char *arg;
+    char verb[24], arg1[FS_NAME], arg2[FS_NAME], rest[FS_DATA];
+    const char *arg, *p;
     int i = 0, n = 0;
 
     while (cmd[i] == ' ')
@@ -424,8 +662,10 @@ static void run_command(const char *cmd)
         return;
 
     if (streq(verb, "help")) {
-        puts("Commands: help, about, os, install gui, version, clear, reboot, halt\n");
-        puts("Files:    ls, dir, cd, pwd, mkdir, touch, cat, echo, rm, free, uname, whoami\n");
+        puts("Core:  look, go, where, newdir, newfile, show, say, del, copy, move, dropdir\n");
+        puts("Text:  top, bottom, count, findtext\n");
+        puts("Sys:   clock, vars, host, me, ok, nope, mem, sysinfo, who\n");
+        puts("Other: os, install gui, version, clear, reboot, halt\n");
     } else if (streq(verb, "about")) {
         puts("KotOS is a real operating system with its own kernel, no Linux.\n");
     } else if (streq(verb, "os")) {
@@ -449,72 +689,126 @@ static void run_command(const char *cmd)
         puts("Halted.\n");
         for (;;)
             __asm__ volatile("cli; hlt");
-    } else if (streq(verb, "ls") || streq(verb, "dir")) {
+    } else if (streq(verb, "look") || streq(verb, "ls") || streq(verb, "dir")) {
         fs_ls();
-    } else if (streq(verb, "cd")) {
+    } else if (streq(verb, "go") || streq(verb, "cd")) {
         fs_cd(arg);
-    } else if (streq(verb, "pwd")) {
+    } else if (streq(verb, "where") || streq(verb, "pwd")) {
         fs_pwd();
-    } else if (streq(verb, "mkdir")) {
+    } else if (streq(verb, "newdir") || streq(verb, "mkdir")) {
         if (!*arg || fs_create(cwd, arg, 1) < 0)
-            puts("mkdir: cannot create directory\n");
-    } else if (streq(verb, "touch")) {
+            puts("newdir: cannot create directory\n");
+    } else if (streq(verb, "newfile") || streq(verb, "touch")) {
         if (!*arg)
-            puts("touch: missing name\n");
+            puts("newfile: missing name\n");
         else if (fs_find(cwd, arg) < 0 && fs_create(cwd, arg, 0) < 0)
-            puts("touch: cannot create file\n");
-    } else if (streq(verb, "cat")) {
+            puts("newfile: cannot create file\n");
+    } else if (streq(verb, "show") || streq(verb, "cat")) {
         if (!*arg)
-            puts("cat: missing name\n");
+            puts("show: missing name\n");
         else
             fs_cat(arg);
-    } else if (streq(verb, "rm")) {
+    } else if (streq(verb, "del") || streq(verb, "rm")) {
         if (!*arg)
-            puts("rm: missing name\n");
+            puts("del: missing name\n");
         else
             fs_remove(cwd, arg);
-    } else if (streq(verb, "echo")) {
+    } else if (streq(verb, "dropdir") || streq(verb, "rmdir")) {
+        int idx = fs_find(cwd, arg);
+        if (idx <= 0 || !fs[idx].is_dir)
+            puts("dropdir: no such directory\n");
+        else if (fs_has_children(idx))
+            puts("dropdir: directory not empty\n");
+        else
+            fs[idx].used = 0;
+    } else if (streq(verb, "copy") || streq(verb, "cp")) {
+        p = arg;
+        if (!take_token(&p, arg1, FS_NAME) || !take_token(&p, arg2, FS_NAME))
+            puts("copy: usage: copy <src> <dst>\n");
+        else
+            fs_copy_file(arg1, arg2);
+    } else if (streq(verb, "move") || streq(verb, "mv")) {
+        p = arg;
+        if (!take_token(&p, arg1, FS_NAME) || !take_token(&p, arg2, FS_NAME))
+            puts("move: usage: move <src> <dst>\n");
+        else
+            fs_move_file(arg1, arg2);
+    } else if (streq(verb, "top") || streq(verb, "head")) {
+        cmd_head(arg);
+    } else if (streq(verb, "bottom") || streq(verb, "tail")) {
+        cmd_tail(arg);
+    } else if (streq(verb, "count") || streq(verb, "wc")) {
+        cmd_count(arg);
+    } else if (streq(verb, "findtext") || streq(verb, "grep")) {
+        p = arg;
+        if (!take_token(&p, arg1, FS_DATA) || !take_token(&p, arg2, FS_NAME))
+            puts("findtext: usage: findtext <text> <file>\n");
+        else
+            cmd_grep(arg1, arg2);
+    } else if (streq(verb, "say") || streq(verb, "echo")) {
         const char *gt = arg;
-        while (*gt && *gt != '>')
+        int append = 0;
+        while (*gt) {
+            if (gt[0] == '>' && gt[1] == '>') {
+                append = 1;
+                break;
+            }
+            if (gt[0] == '>')
+                break;
             gt++;
+        }
         if (*gt == '>') {
-            char text[FS_DATA];
-            char fname[FS_NAME];
+            char text[FS_DATA], fname[FS_NAME];
             int t = 0, f = 0;
-            const char *p = arg;
-            while (p < gt) {
-                if (!(*p == ' ' && t == 0) && t < FS_DATA - 1)
-                    text[t++] = *p;
-                p++;
+            const char *q = arg;
+            const char *stop = gt;
+            while (q < stop) {
+                if (!(*q == ' ' && t == 0) && t < FS_DATA - 1)
+                    text[t++] = *q;
+                q++;
             }
             while (t > 0 && text[t - 1] == ' ')
                 t--;
             text[t] = 0;
-            p = gt + 1;
-            while (*p == ' ')
-                p++;
-            while (*p && *p != ' ' && f < FS_NAME - 1)
-                fname[f++] = *p++;
+            q = gt + (append ? 2 : 1);
+            while (*q == ' ')
+                q++;
+            while (*q && *q != ' ' && f < FS_NAME - 1)
+                fname[f++] = *q++;
             fname[f] = 0;
             if (!f)
-                puts("echo: missing file name\n");
+                puts("say: missing file name\n");
+            else if (append)
+                fs_append_file(fname, text);
             else
                 fs_write(fname, text);
         } else {
             puts(arg);
             putc('\n');
         }
-    } else if (streq(verb, "uname")) {
-        puts("KotOS 1.0 i386 Multiboot\n");
-    } else if (streq(verb, "whoami")) {
-        puts("root\n");
-    } else if (streq(verb, "free")) {
+    } else if (streq(verb, "clock") || streq(verb, "date")) {
+        cmd_clock();
+    } else if (streq(verb, "vars") || streq(verb, "env")) {
+        puts("HOME=/root\nPATH=/bin\nSHELL=/bin/sh\nTERM=linux\n");
+    } else if (streq(verb, "host") || streq(verb, "hostname")) {
+        puts("kotos\n");
+    } else if (streq(verb, "me") || streq(verb, "id")) {
+        puts("uid=0(root) gid=0(root)\n");
+    } else if (streq(verb, "ok") || streq(verb, "true")) {
+        return;
+    } else if (streq(verb, "nope") || streq(verb, "false")) {
+        return;
+    } else if (streq(verb, "mem") || streq(verb, "free")) {
         u32 up = 0;
         if (mb_info)
             up = *(volatile u32 *)(mb_info + 8);
         puts("Memory: ");
         putu(1024 + up);
         puts(" KB total (from Multiboot)\n");
+    } else if (streq(verb, "sysinfo") || streq(verb, "uname")) {
+        puts("KotOS 1.0 i386 Multiboot\n");
+    } else if (streq(verb, "who") || streq(verb, "whoami")) {
+        puts("root\n");
     } else {
         puts("Unknown command: ");
         puts(verb);

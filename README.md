@@ -7,9 +7,12 @@
 - загрузка через Multiboot в QEMU;
 - собственный вывод в VGA-текст 80×25 и в последовательный порт COM1;
 - обработка клавиатуры (PS/2, скан-код set 1, Shift);
-- мини-шелл: `help`, `about`, `os`, `install gui`, `version`, `clear`, `reboot`, `halt`;
-- RAMFS в памяти (64 узла, файлы до 512 байт): `ls`/`dir`, `cd`, `pwd`, `mkdir`, `touch`, `cat`, `echo текст > файл`, `rm`;
-- системные: `free` (память из Multiboot), `uname`, `whoami`;
+- шелл KotOS: `look`, `go`, `where`, `newdir`, `newfile`, `show`, `say`, `del`, `copy`, `move`, `dropdir`;
+- текст: `top`, `bottom`, `count`, `findtext`;
+- системные: `clock` (RTC), `vars`, `host`, `me`, `ok`, `nope`, `mem`, `sysinfo`, `who`;
+- графика: `os`, `install gui`; служебные: `help`, `about`, `version`, `clear`, `reboot`, `halt`;
+- RAMFS в памяти (64 узла, файлы до 512 байт), `say текст > файл` и `say текст >> файл`;
+- Linux-имена (`ls`, `cd`, `pwd`, `mkdir`, `touch`, `cat`, `echo`, `rm`, `cp`, `mv`, `rmdir`, `head`, `tail`, `wc`, `grep`, `date`, `env`, `free`, `uname`, `whoami` и др.) работают как алиасы.
 - собственная графика: Bochs VBE 1024×768×32, LFB через PCI BAR0;
 - рабочий стол, верхняя панель, окно с заголовком и кнопками, курсор мыши (стрелки);
 - экран приветствия в стиле fastfetch: кот, `damir@kotos`, версия, ядро и шелл;
@@ -52,6 +55,7 @@ docs/         — скриншоты
 - [x] Клавиатура и мини-шелл
 - [x] VBE framebuffer: рабочий стол, панель, окно, курсор (стрелки)
 - [x] RAMFS и базовые файловые команды
+- [x] Расширенный набор команд (файлы, текст, RTC)
 - [ ] Шрифт и текст в графическом режиме
 - [ ] Перетаскивание окон мышью (PS/2 mouse)
 - [ ] Прерывания (IDT/PIC) и таймер
