@@ -28,3 +28,6 @@ boot_test.sh
 kernel/user.bin
 kernel/user/init.o
 kernel/user/init.elf
+
+# проверка страницы
+site/.office-verify/

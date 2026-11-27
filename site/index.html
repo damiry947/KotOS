@@ -1,0 +1,285 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="canonical" href="https://kotos.damiry947.ru/">
+<title>KotOS — операционная система с собственным ядром</title>
+<meta name="description" content="KotOS — ОС с собственным ядром: Multiboot, framebuffer-консоль с кириллицей, ring 3, syscalls, RAMFS и графический интерфейс с окнами.">
+<style>
+:root{
+  --bg:#070b10; --panel:#0e141b; --panel-2:#111a24; --line:#1f2a37;
+  --txt:#e6edf3; --dim:#8b98a5; --green:#4ade80; --cyan:#22d3ee;
+  --blue:#2563eb; --red:#f87171; --yellow:#fbbf24;
+  --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace;
+  --sans:ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{
+  margin:0;background:
+    radial-gradient(1100px 520px at 15% -10%,#102433 0%,transparent 60%),
+    radial-gradient(900px 500px at 90% 0%,#0d2a24 0%,transparent 55%),
+    var(--bg);
+  color:var(--txt);font-family:var(--sans);line-height:1.6;
+  -webkit-font-smoothing:antialiased;
+}
+a{color:var(--cyan);text-decoration:none}
+a:hover{text-decoration:underline}
+img{max-width:100%;display:block}
+.wrap{width:min(1080px,calc(100% - 40px));margin:0 auto}
+.top{display:flex;align-items:center;justify-content:space-between;padding:22px 0;border-bottom:1px solid var(--line)}
+.brand{display:flex;align-items:center;gap:10px;font-weight:700;letter-spacing:.02em}
+.brand .dot{width:10px;height:10px;border-radius:50%;background:var(--green);box-shadow:0 0 14px var(--green)}
+.brand small{color:var(--dim);font-weight:500;letter-spacing:.12em;text-transform:uppercase;font-size:11px}
+.top nav{display:flex;gap:18px;font-size:14px}
+.top nav a{color:var(--dim)}
+.top nav a:hover{color:var(--txt)}
+.hero{display:grid;grid-template-columns:1.05fr .95fr;gap:44px;align-items:center;padding:64px 0 48px}
+.eyebrow{font-family:var(--mono);font-size:12px;letter-spacing:.16em;text-transform:uppercase;color:var(--green);margin:0 0 14px}
+h1{font-size:clamp(34px,5vw,56px);line-height:1.05;margin:0 0 18px;letter-spacing:-.03em}
+h1 .grad{background:linear-gradient(90deg,var(--green),var(--cyan));-webkit-background-clip:text;background-clip:text;color:transparent}
+.lead{color:#b7c3cf;font-size:17px;max-width:46ch;margin:0 0 26px}
+.actions{display:flex;flex-wrap:wrap;gap:12px}
+.btn{display:inline-flex;align-items:center;gap:8px;padding:12px 18px;border-radius:10px;font-weight:600;font-size:14px;border:1px solid var(--line);color:var(--txt);background:var(--panel)}
+.btn:hover{text-decoration:none;border-color:#33465a}
+.btn.primary{background:linear-gradient(90deg,#22c55e,#0ea5a5);border:0;color:#04120b}
+.btn.primary:hover{filter:brightness(1.05)}
+.term{border:1px solid var(--line);border-radius:14px;overflow:hidden;background:var(--panel);box-shadow:0 24px 60px rgba(0,0,0,.45)}
+.term .bar{display:flex;align-items:center;gap:8px;padding:10px 12px;background:#0b1219;border-bottom:1px solid var(--line)}
+.term .lights{display:flex;gap:6px}
+.term .lights i{width:10px;height:10px;border-radius:50%;display:block}
+.term .lights i:nth-child(1){background:var(--red)}
+.term .lights i:nth-child(2){background:var(--yellow)}
+.term .lights i:nth-child(3){background:var(--green)}
+.term .bar span{margin-left:auto;font-family:var(--mono);font-size:12px;color:var(--dim)}
+.term pre{margin:0;padding:18px 18px 20px;font-family:var(--mono);font-size:13px;line-height:1.55;color:#cbd5e1;white-space:pre-wrap}
+.term .cat{color:#eab308}
+.term .host{color:var(--cyan)}
+.term .label{color:var(--green)}
+.term .sep{color:#475569}
+.term .muted{color:var(--dim)}
+.section{padding:56px 0;border-top:1px solid var(--line)}
+.section h2{font-size:clamp(24px,3vw,32px);margin:0 0 10px;letter-spacing:-.02em}
+.section .sub{color:var(--dim);margin:0 0 30px;max-width:62ch}
+.shots{display:grid;grid-template-columns:1.35fr 1fr;gap:18px;align-items:start}
+.shot{border:1px solid var(--line);border-radius:14px;overflow:hidden;background:#0b1219}
+.shot .bar{display:flex;gap:6px;align-items:center;padding:9px 12px;border-bottom:1px solid var(--line);background:#0b1219}
+.shot .bar i{width:9px;height:9px;border-radius:50%;background:#334155}
+.shot .bar em{margin-left:auto;font-style:normal;font-family:var(--mono);font-size:11px;color:var(--dim)}
+.shot p{margin:0;padding:10px 12px;font-size:13px;color:var(--dim);border-top:1px solid var(--line)}
+.grid{display:grid;grid-template-columns:repeat(3,1fr);gap:14px}
+.card{background:linear-gradient(180deg,var(--panel-2),var(--panel));border:1px solid var(--line);border-radius:14px;padding:18px}
+.card .num{font-family:var(--mono);font-size:12px;color:var(--green);margin-bottom:10px}
+.card h3{margin:0 0 8px;font-size:16px}
+.card p{margin:0;color:var(--dim);font-size:14px}
+.cmds{display:grid;grid-template-columns:1.1fr .9fr;gap:18px;align-items:start}
+.code{position:relative;background:#0b1219;border:1px solid var(--line);border-radius:12px;padding:16px 16px 18px;font-family:var(--mono);font-size:13px;color:#cbd5e1;overflow:auto}
+.code .c{color:#64748b}
+.code .g{color:var(--green)}
+.copy{position:absolute;top:10px;right:10px;font:inherit;font-size:11px;padding:5px 9px;border-radius:7px;border:1px solid var(--line);background:#0f1720;color:var(--dim);cursor:pointer}
+.copy:hover{color:var(--txt);border-color:#33465a}
+.list{margin:0;padding:0;list-style:none;display:grid;gap:10px}
+.list li{display:flex;gap:10px;color:#b7c3cf;font-size:14px}
+.list li::before{content:"→";color:var(--green);font-family:var(--mono)}
+details{margin-top:18px;border:1px solid var(--line);border-radius:12px;background:var(--panel);padding:12px 16px}
+summary{cursor:pointer;color:var(--txt);font-weight:600}
+summary::marker{color:var(--green)}
+details .tags{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px}
+.tag{font-family:var(--mono);font-size:12px;padding:4px 8px;border:1px solid var(--line);border-radius:6px;color:#b7c3cf;background:#0b1219}
+.steps{counter-reset:step;display:grid;gap:12px;margin:0;padding:0;list-style:none}
+.steps li{counter-increment:step;display:grid;grid-template-columns:34px 1fr;gap:12px;align-items:start}
+.steps li::before{content:counter(step);width:30px;height:30px;border-radius:50%;border:1px solid var(--line);display:grid;place-items:center;font-family:var(--mono);font-size:13px;color:var(--green);background:#0b1219}
+.steps h3{margin:0 0 4px;font-size:15px}
+.steps p{margin:0;color:var(--dim);font-size:14px}
+.road{display:grid;grid-template-columns:repeat(2,1fr);gap:12px;margin:0;padding:0;list-style:none}
+.road li{border:1px solid var(--line);border-radius:12px;padding:14px 16px;background:var(--panel);color:#b7c3cf;font-size:14px}
+.road b{display:block;color:var(--txt);margin-bottom:4px}
+.foot{padding:34px 0;border-top:1px solid var(--line);color:var(--dim);font-size:13px;display:flex;flex-wrap:wrap;gap:12px;justify-content:space-between}
+.foot a{color:#b7c3cf}
+@media (max-width:880px){
+  .hero{grid-template-columns:1fr;gap:28px;padding:44px 0 36px}
+  .shots{grid-template-columns:1fr}
+  .grid{grid-template-columns:1fr 1fr}
+  .cmds{grid-template-columns:1fr}
+}
+@media (max-width:560px){
+  .grid{grid-template-columns:1fr}
+  .road{grid-template-columns:1fr}
+  .top nav{display:none}
+  .term pre{white-space:pre;overflow-x:auto;font-size:11.5px}
+}
+@media (prefers-reduced-motion:reduce){html{scroll-behavior:auto}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header class="top">
+    <div class="brand"><span class="dot"></span>KotOS <small>1.0</small></div>
+    <nav>
+      <a href="#features">Возможности</a>
+      <a href="#shots">Скриншоты</a>
+      <a href="#start">Сборка</a>
+      <a href="https://github.com/damiry947/KotOS">GitHub</a>
+    </nav>
+  </header>
+
+  <section class="hero">
+    <div>
+      <p class="eyebrow">операционная система · собственное ядро</p>
+      <h1>Своя ОС.<br><span class="grad">Своё ядро.</span></h1>
+      <p class="lead">KotOS загружается через Multiboot, рисует консоль на framebuffer, выполняет программы в ring 3 и показывает окна. Без Linux внутри.</p>
+      <div class="actions">
+        <a class="btn primary" href="https://github.com/damiry947/KotOS">Открыть GitHub</a>
+        <a class="btn" href="#start">Как собрать</a>
+      </div>
+    </div>
+    <div class="term" aria-label="Экран приветствия KotOS">
+      <div class="bar"><span class="lights"><i></i><i></i><i></i></span><span>kotos — qemu</span></div>
+      <pre><span class="cat">   /\_/\     </span><span class="host">damir@kotos</span>
+<span class="cat">  ( o.o )    </span><span class="sep">-----------------</span>
+<span class="cat">   > ^ &lt;     </span><span class="label">ОС</span>     KotOS 1.0
+<span class="cat">             </span><span class="label">Ядро</span>   native x86 (Multiboot)
+<span class="cat">             </span><span class="label">Оболочка</span> kotos-sh
+
+<span class="muted">Введите help для списка команд.</span>
+
+<span class="label">kotos</span>&gt; look
+docs/  README.md
+
+<span class="label">kotos</span>&gt; install gui
+<span class="muted">GUI: окна, панель, часы, мышь</span></pre>
+    </div>
+  </section>
+
+  <section class="section" id="shots">
+    <h2>Так это выглядит</h2>
+    <p class="sub">Реальные скриншоты из QEMU: графический режим с окном терминала и консоль с кириллицей.</p>
+    <div class="shots">
+      <figure class="shot" style="margin:0">
+        <div class="bar"><i></i><i></i><i></i><em>install gui</em></div>
+        <img src="data:image/png;base64,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" alt="KotOS GUI: рабочий стол, панель с часами и окно терминала с выводом help" width="1024" height="768">
+        <p>Рабочий стол, панель, окно терминала, PS/2-мышь и перетаскивание.</p>
+      </figure>
+      <figure class="shot" style="margin:0">
+        <div class="bar"><i></i><i></i><i></i><em>console</em></div>
+        <img src="data:image/png;base64,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IQIAAABCBAAAAIQIAAAACBEAAAAQIgAAACBEAAAAQIgAAACAEAEAAAAhAgAAAEIEAAAAhAgAAAAIEQAAABAiAAAAIEQAAABAiAAAAIAQAQAAACECAAAAQgQAAACECAAAAAgRAAAAECIAAAAgRAAAAECIAAAAgBABAAAAIQIAAABCBAAAAIQIAAAACBEAAAAQIgAAACBEAAAAQIgAAACAEAEAAAAhAgAAAEIEAAAAhAgAAAAIEQAAABAiAAAAIEQAAABAiAAAAIAQAQAAACECAAAAQgQAAACECAAAAAgRAAAAECIAAAAgRAAAAECIAAAAgBABAAAAIQIAAABCBAAAAIQIAAAACBEAAAAQIgAAACBEAAAAQIgAAACAEAEAAAAhAgAAAEIEAAAAhAgAAAAIEQAAABAiAAAAIEQAAABAiAAAAIAQAQAAACECAAAAQgQAAACECAAAAAgRAAAAECIAAAAgRAAAAECIAAAAgBABAAAAIQIAAABCBAAAAIQIAAAACBEAAAAQIgAAACBEAAAAQIgAAACAEAEAAAAhAgAAAEIEAAAAhAgAAAAIEQAAABAiAAAAIEQAAABAiAAAAIAQAQAAACECAAAAQgQAAACECAAAAAgRAAAAECIAAAAgRAAAAECIAAAAgBABAAAAIQIAAABCBAAAAIQIAAAACBEAAAAQIgAAACBEAAAAQIgAAACAEAEAAAAhAgAAAEIEAAAAhAgAAAAIEQAAABAiAAAAIEQAAABAiAAAAIAQAQAAACECAAAAQgQAAACECAAAAAgRAAAAECIAAAAgRAAAAECIAAAAgBABAAAAIQIAAABCBAAAAIQIAAAACBEAAAAQIgAAACBEAAAAQIgAAACAEAEAAAAhAgAAAEIEAAAAhAgAAAAIEQAAABAiAAAAIEQAAABAiAAAAIAQAQAAACECAAAAQgQAAACECAAAAAgRAAAAECIAAAAgRAAAAECIAAAAgBABAAAAIQIAAABCBAAAAIQIAAAACBEAAAAQIgAAACBEAAAAQIgAAACAEAEAAAAhAgAAAEIEAAAAhAgAAAAIEQAAABAiAAAAIEQAAABAiAAAAIAQAQAAACECAAAAQgQAAACECAAAAAgRAAAAECIAAAAgRAAAAECIAAAAgBABAAAAIQIAAABCBAAAAIQIAAAACBEAAAAQIgAAACBEAAAAQIgAAACAEAEAAAAhAgAAAEIEAAAAhAgAAAAIEQAAABAiAAAAIEQAAABAiAAAAIAQAQAAACECAAAAQgQAAACECAAAAAgRAAAAECIAAAAgRAAAAECIAAAAgBABAAAAIQIAAABCBAAAAIQIAAAACBEAAAAQIgAAACBEAAAAQIgAAACAEAEAAAAhAgAAAEIEAAAAhAgAAAAIEQAAABAiAAAAIEQAAABAiAAAAIAQAQAAACECAAAAQgQAAACECAAAAAgRAAAAECIAAAAgRAAAAECIAAAAgBABAAAAIQIAAABCBAAAAIQIAAAACBEAAAAQIgAAACBEAAAAQIgAAACAEAEAAAAhAgAAAEIEAAAAhAgAAAAIEQAAABAiAAAAIEQAAABAiAAAAIAQAQAAACECAAAAQgQAAACECAAAAAgRAAAAECIAAAAgRAAAAECIAAAAgBABAAAAIQIAAABCBAAAAIQIAAAACBEAAAAQIgAAACBEAAAAQIgAAACAEAEAAAAhAgAAAEIEAAAAhAgAAAAIEQAAABAiAAAAIEQAAABAiAAAAIAQAQAAACECAAAAQgQAAACECAAAAAgRAAAAECIAAAAgRAAAAECIAAAAgBABAAAAIQIAAABCBAAAAIQIAAAACBEAAAAQIgAAACBEAAAAQIgAAACAEAEAAAAhAgAAAEIEAAAAhAgAAAAIEQAAABAiAAAAIEQAAABAiAAAAIAQAQAAACECAAAAQgQAAACECAAAAAgRAAAAECIAAAAgRAAAAECIAAAAgBABAAAAIQIAAABCBAAAAIQIAAAACBEAAAAQIgAAACBEAAAAQIgAAACAEAEAAAAhAgAAAEIEAAAAhAgAAAAIEQAAABAiAAAAIEQAAABAiAAAAIAQAQAAACECAAAAQgQAAACECAAAAAgRAAAAECIAAAAgRAAAAECIAAAAgBABAAAAIQIAAABCBAAAAIQIAAAACBEAAAAQIgAAACBEAAAAQIgAAACAEAEAAAAhAgAAAEIEAAAAhAgAAAAIEQAAABAiAAAAIEQAAABAiAAAAIAQAQAAACECAAAAQgQAAACECAAAAAgRAAAAECIAAAAgRAAAAECIAAAAgBABAAAAIQIAAABCBAAAAIQIAAAACBEAAAAQIgAAACBEAAAAQIgAAACAEAEAAAAhAgAAAEIEAAAAhAgAAAAIEQAAABAiAAAAIEQAAABAiAAAAIAQAQAAACECAAAAQgQAAACECAAAAAgRAAAAECIAAAAgRAAAAECIAAAAgBABAAAAIQIAAABCBAAAAIQIAAAACBEAAAAQIgAAACBEAAAAQIgAAACAEAEAAAAhAgAAAEIEAAAAhAgAAAAIEQAAABAiAAAAIEQAAABAiAAAAIAQAQAAACECAAAAQgQAAACECAAAAAgRAAAAECIAAAAgRAAAAECIAAAAgBABAAAAIQIAAABCBAAAAIQIAAAACBEAAAAQIgAAACBEAAAAQIgAAACAEAEAAAAhAgAAAEIEAAAAhAgAAAAIEQAAABAiAAAAIEQAAABAiAAAAIAQAQAAACECAAAAQgQAAACECAAAAAgRAAAAECIAAAAgRAAAAECIAAAAgBABAAAAIQIAAABCBAAAAIQIAAAACBEAAAAQIgAAACBEAAAAQIgAAACAEAEAAAAhAgAAAEIEAAAAhAgAAAAIEQAAABAiAAAAIEQAAABAiAAAAIAQAQAAACECAAAAQgQAAACECAAAAAgRAAAAECIAAAAgRAAAAECIAAAAgBABAAAAIQIAAABCBAAAAIQIAAAACBEAAAAQIgAAACBEAAAAQIgAAACAEAEAAAAhAgAAAEIEAAAAhAgAAAAIEQAAABAiAAAAIEQAAABAiAAAAIAQAQAAACECAAAAQgQAAACECAAAAAgRAAAAECIAAAAgRAAAAECIAAAAgBABAAAAIQIAAABCBAAAAIQIAAAACBEAAAAQIgAAACBEAAAAQIgAAACAEAEAAAAhAgAAAEIEAAAAhAgAAAAIEQAAABAiAAAAIEQAAABAiAAAAIAQAQAAACECAAAAQgQAAACECAAAAAgRAAAAECIAAAAgRAAAAECIAAAAgBABAAAAIQIAAABCBAAAAIQIAAAACBEAAAAQIgAAACBEAAAAQIgAAACAEAEAAAAhAgAAAEIEAAAAhAgAAAAIEQAAABAiAAAAIEQAAABAiAAAAIAQAQAAACECAAAAQgQAAACECAAAAAgRAAAAECIAAAAgRAAAAECIAAAAgBABAAAAIQIAAABCBAAAAIQIAAAACBEAAAAQIgAAACBEAAAAQIgAAACAEAEAAAAhAgAAAEIEAAAAhAgAAAAIEQAAABAiAAAAIEQAAABAiAAAAIAQAQAAACECAAAAQgQAAACECAAAAAgRAAAAECIAAAAgRAAAAECIAAAAgBABAAAAIQIAAABCBAAAAIQIAAAACBEAAAAQIgAAACBEAAAAQIgAAACAEAEAAAAhAgAAAEIEAAAAhAgAAAAIEQAAABAiAAAAIEQAAABAiAAAAIAQAQAAACECAAAAQgQAAACECAAAAAgRAAAAECIAAAAgRAAAAECIAAAAgBABAAAAIQIAAABCBAAAAIQIAAAACBEAAAAQIgAAACBEAAAAQIgAAACAEAEAAAAh/wEmYNZO4gmygQAAAABJRU5ErkJggg==" alt="Консоль KotOS с русским экраном приветствия и приглашением kotos" width="1024" height="768">
+        <p>Framebuffer-консоль, шрифт CP866, русский интерфейс.</p>
+      </figure>
+    </div>
+  </section>
+
+  <section class="section" id="features">
+    <h2>Что внутри</h2>
+    <p class="sub">Маленькое ядро, но настоящие механизмы: загрузка, память, прерывания, пользовательский режим и графика.</p>
+    <div class="grid">
+      <article class="card"><div class="num">01</div><h3>Своё ядро</h3><p>Multiboot, 32-битный x86, сборка без libc: <code>gcc -m32 -ffreestanding</code> и свой линкер-скрипт.</p></article>
+      <article class="card"><div class="num">02</div><h3>Терминал и RAMFS</h3><p>Команды KotOS и файлы в памяти: до 64 узлов, файлы до 512 байт, перенаправление <code>&gt;</code> и <code>&gt;&gt;</code>.</p></article>
+      <article class="card"><div class="num">03</div><h3>Ring 3 и syscalls</h3><p>Отдельная программа на 0x400000, переход в пользовательский режим и вызовы через <code>int 0x80</code>.</p></article>
+      <article class="card"><div class="num">04</div><h3>Кириллица</h3><p>Собственная консоль в framebuffer и шрифт CP866: русский текст виден и в шелле, и в GUI.</p></article>
+      <article class="card"><div class="num">05</div><h3>Окна и мышь</h3><p>Панель с часами, перетаскиваемые окна, курсор PS/2. Интерфейс рисуется напрямую в видеопамять.</p></article>
+      <article class="card"><div class="num">06</div><h3>Запуск в QEMU</h3><p>Одна команда <code>make run</code> — и система стартует. Без установки, разделов и загрузчика на диске.</p></article>
+    </div>
+  </section>
+
+  <section class="section" id="commands">
+    <h2>Команды</h2>
+    <p class="sub">Имена в стиле KotOS; привычные Linux-команды работают как алиасы.</p>
+    <div class="cmds">
+      <div class="code">
+<button class="copy" type="button" data-copy="look go where newdir newfile show say del copy move dropdir
+rename append top bottom count findtext sort rev hex seq find tree
+clock uptime vars host me ok nope mem sysinfo who which stat du history sleep user exit">копировать</button>
+<span class="c"># файлы</span>
+<span class="g">look</span>  <span class="g">go</span>  <span class="g">where</span>  <span class="g">newdir</span>  <span class="g">newfile</span>
+<span class="g">show</span>  <span class="g">say</span>  <span class="g">del</span>  <span class="g">copy</span>  <span class="g">move</span>  <span class="g">dropdir</span>
+<span class="g">rename</span>  <span class="g">append</span>
+
+<span class="c"># текст</span>
+<span class="g">top</span>  <span class="g">bottom</span>  <span class="g">count</span>  <span class="g">findtext</span>
+<span class="g">sort</span>  <span class="g">rev</span>  <span class="g">hex</span>  <span class="g">seq</span>  <span class="g">find</span>  <span class="g">tree</span>
+
+<span class="c"># система</span>
+<span class="g">clock</span>  <span class="g">uptime</span>  <span class="g">vars</span>  <span class="g">host</span>  <span class="g">me</span>
+<span class="g">mem</span>  <span class="g">sysinfo</span>  <span class="g">who</span>  <span class="g">which</span>  <span class="g">stat</span>
+<span class="g">du</span>  <span class="g">history</span>  <span class="g">sleep</span>  <span class="g">user</span>  <span class="g">exit</span>
+      </div>
+      <div>
+        <ul class="list">
+          <li>RAMFS живёт в памяти и очищается при перезагрузке.</li>
+          <li><code>say текст &gt; файл</code> и <code>say текст &gt;&gt; файл</code> — запись и дописывание.</li>
+          <li><code>user</code> запускает программу в ring 3 через syscall'ы.</li>
+          <li><code>install gui</code> открывает графический режим; <code>Esc</code> — назад в терминал.</li>
+        </ul>
+        <details>
+          <summary>Алиасы Linux</summary>
+          <div class="tags">
+            <span class="tag">ls</span><span class="tag">cd</span><span class="tag">pwd</span><span class="tag">mkdir</span><span class="tag">touch</span><span class="tag">cat</span><span class="tag">echo</span><span class="tag">rm</span><span class="tag">cp</span><span class="tag">mv</span><span class="tag">rmdir</span><span class="tag">head</span><span class="tag">tail</span><span class="tag">wc</span><span class="tag">grep</span><span class="tag">date</span><span class="tag">env</span><span class="tag">free</span><span class="tag">uname</span><span class="tag">whoami</span>
+          </div>
+        </details>
+      </div>
+    </div>
+  </section>
+
+  <section class="section" id="start">
+    <h2>Собрать и запустить</h2>
+    <p class="sub">Нужны gcc, binutils и QEMU. Сборка занимает секунды: ядро маленькое.</p>
+    <div class="cmds">
+      <div class="code"><button class="copy" type="button" data-copy="git clone https://github.com/damiry947/KotOS.git
+cd KotOS
+make
+make run">копировать</button><span class="c"># клонировать и собрать</span>
+git clone https://github.com/damiry947/KotOS.git
+<span class="c">cd</span> KotOS
+<span class="g">make</span>
+<span class="g">make run</span>
+
+<span class="c"># в QEMU:</span>
+<span class="label">kotos</span>&gt; install gui
+
+<span class="c"># альтернатива вручную:</span>
+qemu-system-x86_64 -kernel kernel/kernel.elf -m 64</div>
+      <ol class="steps">
+        <li><div><h3>Зависимости</h3><p><code>gcc</code>, <code>binutils</code>, <code>qemu-system-x86</code>. Для GUI — стандартный VGA QEMU.</p></div></li>
+        <li><div><h3>Сборка</h3><p><code>make</code> собирает ядро и пользовательскую программу в <code>kernel.elf</code>.</p></div></li>
+        <li><div><h3>Запуск</h3><p><code>make run</code> открывает QEMU. Введите <code>install gui</code> для графики.</p></div></li>
+      </ol>
+    </div>
+  </section>
+
+  <section class="section" id="roadmap">
+    <h2>Дальше</h2>
+    <p class="sub">Честно о статусе: это работающая система, но ещё не замена Linux.</p>
+    <ul class="road">
+      <li><b>Планировщик и процессы</b>Сейчас один пользовательский процесс; дальше — вытеснение и несколько задач.</li>
+      <li><b>Диски</b>RAMFS только в памяти; нужны драйверы и ФС для установки на SSD.</li>
+      <li><b>Сеть</b>Сетевого стека пока нет — только локальные команды.</li>
+      <li><b>GUI</b>Два окна, простой z-порядок; в планах — resize, меню и больше приложений.</li>
+    </ul>
+  </section>
+
+  <footer class="foot">
+    <div>KotOS 1.0 · GPL-3.0 · <a href="https://github.com/damiry947/KotOS">github.com/damiry947/KotOS</a></div>
+    <div>Собрано на x86 · Multiboot · QEMU</div>
+  </footer>
+</div>
+
+<script>
+document.querySelectorAll('.copy').forEach(function (btn) {
+  btn.addEventListener('click', function () {
+    var text = btn.getAttribute('data-copy') || '';
+    function done(ok) {
+      var old = btn.textContent;
+      btn.textContent = ok ? 'скопировано' : 'выделите вручную';
+      setTimeout(function () { btn.textContent = old; }, 1600);
+    }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(function () { done(true); }, function () { done(false); });
+    } else {
+      done(false);
+    }
+  });
+});
+</script>
+</body>
+</html>
