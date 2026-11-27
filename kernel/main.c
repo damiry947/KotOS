@@ -2,6 +2,14 @@ typedef unsigned char u8;
 typedef unsigned short u16;
 typedef unsigned int u32;
 
+static u8 cp866_of(u32 cp);
+static int fb_console_active;
+static u32 con_x, con_y;
+static void fb_console_putc(char c);
+static void fb_console_clear(void);
+
+#include "font866.h"
+
 #define VGA_W 80
 #define VGA_H 25
 #define COM1 0x3F8
@@ -78,6 +86,10 @@ static void vga_putc(char c)
 static void vga_clear(void)
 {
     u32 i;
+    if (fb_console_active) {
+        fb_console_clear();
+        return;
+    }
     for (i = 0; i < VGA_W * VGA_H; i++)
         vga[i] = (u16)(' ' | (vattr << 8));
     vrow = 0;
@@ -91,16 +103,41 @@ static void vga_set_attr(u8 a)
 
 static void putc(char c)
 {
-    vga_putc(c);
+    if (fb_console_active)
+        fb_console_putc(c);
+    else
+        vga_putc(c);
     if (c == '\n')
         serial_putc('\r');
     serial_putc(c);
 }
 
+static void emit(u8 b)
+{
+    if (fb_console_active)
+        fb_console_putc((char)b);
+    else
+        vga_putc((char)b);
+}
+
 static void puts(const char *s)
 {
-    while (*s)
-        putc(*s++);
+    while (*s) {
+        unsigned char c = (unsigned char)*s++;
+        if (c < 0x80) {
+            emit(c);
+            serial_putc((char)c);
+        } else if ((c == 0xD0 || c == 0xD1) && *s) {
+            unsigned char c2 = (unsigned char)*s++;
+            u32 cp = ((c & 0x1F) << 6) | (c2 & 0x3F);
+            emit(cp866_of(cp));
+            serial_putc((char)c);
+            serial_putc((char)c2);
+        } else {
+            emit('?');
+            serial_putc((char)c);
+        }
+    }
 }
 
 static void putu(u32 v)
@@ -117,6 +154,22 @@ static void putu(u32 v)
         v /= 10;
     }
     puts(&b[i]);
+}
+
+
+static u8 cp866_of(u32 cp)
+{
+    if (cp >= 0x0410 && cp <= 0x042F)
+        return (u8)(0x80 + (cp - 0x0410));
+    if (cp >= 0x0430 && cp <= 0x043F)
+        return (u8)(0xA0 + (cp - 0x0430));
+    if (cp >= 0x0440 && cp <= 0x044F)
+        return (u8)(0xE0 + (cp - 0x0440));
+    if (cp == 0x0401)
+        return 0xF0;
+    if (cp == 0x0451)
+        return 0xF1;
+    return '?';
 }
 
 static void splash(void);
@@ -188,13 +241,13 @@ static void splash(void)
     cputs(0x0E, "  ( o.o )    ");
     cputs(0x08, "-----------------\n");
     cputs(0x0E, "   > ^ <     ");
-    cputs(0x0A, "OS     ");
+    cputs(0x0A, "ОС     ");
     cputs(0x07, "KotOS 1.0\n");
     cputs(0x0E, "             ");
-    cputs(0x0A, "Kernel ");
+    cputs(0x0A, "Ядро   ");
     cputs(0x07, "native x86 (Multiboot)\n");
     cputs(0x0E, "             ");
-    cputs(0x0A, "Shell  ");
+    cputs(0x0A, "Оболочка ");
     cputs(0x07, "kotos-sh\n");
     vga_set_attr(0x07);
     putc('\n');
@@ -879,12 +932,14 @@ static void run_command(const char *cmd)
         return;
 
     if (streq(verb, "help")) {
-        puts("Core: look go where newdir newfile show say del copy move dropdir rename append\n");
-        puts("Text: top bottom count findtext sort rev hex seq find tree\n");
-        puts("Sys:  clock uptime vars host me ok nope mem sysinfo who which stat du\n");
-        puts("More: history sleep user exit os install gui version clear reboot halt\n");
+        puts("Файлы: look go where newdir newfile show say del copy move dropdir\n");
+        puts("       rename append\n");
+        puts("Текст: top bottom count findtext sort rev hex seq find tree\n");
+        puts("Система: clock uptime vars host me ok nope mem sysinfo who\n");
+        puts("         which stat du history sleep user exit\n");
+        puts("Прочее: os install gui version clear reboot halt\n");
     } else if (streq(verb, "about")) {
-        puts("KotOS is a real operating system with its own kernel, no Linux.\n");
+        puts("KotOS — реальная ОС с собственным ядром, без Linux.\n");
     } else if (streq(verb, "os")) {
         splash();
     } else if (streq(verb, "gui") || (streq(verb, "install") && streq(arg, "gui"))) {
@@ -896,14 +951,14 @@ static void run_command(const char *cmd)
             puts("VBE not available, GUI cannot be installed\n");
         }
     } else if (streq(verb, "version")) {
-        puts("KotOS native kernel 1.0 (x86, Multiboot)\n");
+        puts("KotOS 1.0, собственное ядро (x86, Multiboot)\n");
     } else if (streq(verb, "clear")) {
         vga_clear();
     } else if (streq(verb, "reboot")) {
-        puts("Rebooting...\n");
+        puts("Перезагрузка...\n");
         reboot();
     } else if (streq(verb, "halt")) {
-        puts("Halted.\n");
+        puts("Остановлено.\n");
         for (;;)
             __asm__ volatile("cli; hlt");
     } else if (streq(verb, "look") || streq(verb, "ls") || streq(verb, "dir")) {
@@ -1085,7 +1140,7 @@ static void run_command(const char *cmd)
         for (;;)
             __asm__ volatile("cli; hlt");
     } else {
-        puts("Unknown command: ");
+        puts("Неизвестная команда: ");
         puts(verb);
         putc('\n');
     }
@@ -1237,6 +1292,67 @@ static void frame(u32 x, u32 y, u32 w, u32 h, u32 c, u32 t)
     rect(x, y + h - t, w, t, c);
     rect(x, y, t, h, c);
     rect(x + w - t, y, t, h, c);
+}
+
+
+static u32 con_fg = 0xE6EDF3;
+static u32 con_bg = 0x0B0F14;
+
+static void fb_draw_cell(u32 cx, u32 cy, u8 code)
+{
+    u32 x = cx * 8, y = cy * 16, r, b;
+    for (r = 0; r < 16; r++) {
+        u8 bits = font866[(u32)code * 16 + r];
+        for (b = 0; b < 8; b++)
+            px(x + b, y + r, (bits & (0x80 >> b)) ? con_fg : con_bg);
+    }
+}
+
+static void fb_scroll(void)
+{
+    u32 y, i, words = fb_pitch / 4;
+    for (y = 16; y < fb_h; y++) {
+        u32 *src = (u32 *)((u8 *)fb + y * fb_pitch);
+        u32 *dst = (u32 *)((u8 *)fb + (y - 16) * fb_pitch);
+        for (i = 0; i < words; i++)
+            dst[i] = src[i];
+    }
+    rect(0, fb_h - 16, fb_w, 16, con_bg);
+}
+
+static void fb_console_putc(char c)
+{
+    u32 cols = fb_w / 8, rows = fb_h / 16;
+    if (c == '\n') {
+        con_x = 0;
+        con_y++;
+    } else if (c == '\r') {
+        con_x = 0;
+    } else if (c == '\b') {
+        if (con_x) {
+            con_x--;
+            fb_draw_cell(con_x, con_y, ' ');
+        }
+        return;
+    } else {
+        fb_draw_cell(con_x, con_y, (u8)c);
+        con_x++;
+        if (con_x >= cols) {
+            con_x = 0;
+            con_y++;
+        }
+    }
+    if (con_y >= rows) {
+        fb_scroll();
+        con_y = rows - 1;
+    }
+}
+
+static void fb_console_clear(void)
+{
+    rect(0, 0, fb_w, fb_h, con_bg);
+    con_x = 0;
+    con_y = 0;
 }
 
 static void desktop(void)
@@ -1601,8 +1717,12 @@ void kmain(void)
     kernel_gdt_init();
     kernel_idt_init();
     paging_init();
+    if (gfx_init()) {
+        fb_console_active = 1;
+        fb_console_clear();
+    }
     splash();
-    puts("Type help for a list of commands.\n\n");
+    puts("Введите help для списка команд.\n\n");
     prompt();
 
     shell();
