@@ -1,4 +1,4 @@
-# KotOS 1.0
+# KotOS 2.0
 
 Операционная система с **собственным ядром** — без Linux.
 
@@ -155,9 +155,16 @@ glibc-тест.
 - [x] x64: Linux ABI — статический ELF64, syscall, glibc
 - [ ] x64: несколько процессов, fork/exec и ФС для Linux-программ
 
+## Сторонний код
+
+- **ByteOS** — https://github.com/Igoreeek228/ByteOS, автор Igoreeek228 и участники,
+  GPL-3.0. Основа: ветка `Main`, коммит `a47869a` (версия 1.0, 2026-11-12).
+  В KotOS вошли ATA PIO и FAT32 — `kernel/ata.c`, `kernel/fat32.c`; шапки файлов
+  содержат ссылку и коммит. Полный список изменений — `THIRD_PARTY.md`.
+
 ## Лицензия
 
-GPL-3.0 — см. `LICENSE`. Сторонний код и его авторство — в `THIRD_PARTY.md`.
+GPL-3.0 — см. `LICENSE`.
 
 ## Скрипт для хоста
 
