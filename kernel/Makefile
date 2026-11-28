@@ -8,7 +8,7 @@ CFLAGS := -m32 -std=gnu11 -ffreestanding -fno-pie -fno-pic \
 
 LDFLAGS := -m elf_i386 -T linker.ld -nostdlib -z noexecstack
 
-OBJS := boot.o main.o user_asm.o
+OBJS := boot.o main.o user_asm.o ata.o fat32.o
 
 all: kernel.elf
 

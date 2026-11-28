@@ -1,6 +1,6 @@
-typedef unsigned char u8;
-typedef unsigned short u16;
-typedef unsigned int u32;
+#include "types.h"
+#include "ata.h"
+#include "fat32.h"
 
 static u8 cp866_of(u32 cp);
 static int fb_console_active;
@@ -1139,7 +1139,7 @@ static const char *const known_cmds[] = {
     "hostname", "me", "id", "ok", "true", "nope", "false", "mem",
     "free", "sysinfo", "uname", "who", "whoami", "history", "which",
     "sleep", "user", "userspace", "exit", "poweroff",
-    "disk", "memmap", "tz", "timezone", 0
+    "disk", "memmap", "tz", "timezone", "fat", "fls", "fcat", "fput", 0
 };
 
 static void cmd_which(const char *name)
@@ -1339,67 +1339,6 @@ static void gui_start(void)
 }
 
 
-static inline u16 ata_inw(u16 port)
-{
-    u16 r;
-    __asm__ volatile("inw %1, %0" : "=a"(r) : "Nd"(port));
-    return r;
-}
-
-static u8 ata_status(void)
-{
-    return inb(0x1F7);
-}
-
-static int ata_wait_ready(void)
-{
-    u32 t = 2000000;
-    while (t--) {
-        u8 st = ata_status();
-        if (st == 0xFF)
-            return 0;
-        if (!(st & 0x80)) {
-            if (st & 0x01)
-                return 0;
-            if (st & 0x08)
-                return 1;
-        }
-    }
-    return 0;
-}
-
-static int ata_identify(u16 *id)
-{
-    u32 i;
-    outb(0x1F6, 0xA0);
-    outb(0x1F2, 0);
-    outb(0x1F3, 0);
-    outb(0x1F4, 0);
-    outb(0x1F5, 0);
-    outb(0x1F7, 0xEC);
-    if (!ata_wait_ready())
-        return 0;
-    for (i = 0; i < 256; i++)
-        id[i] = ata_inw(0x1F0);
-    return 1;
-}
-
-static int ata_read28(u32 lba, u16 *buf)
-{
-    u32 i;
-    outb(0x1F6, (u8)(0xE0 | ((lba >> 24) & 0x0F)));
-    outb(0x1F2, 1);
-    outb(0x1F3, (u8)lba);
-    outb(0x1F4, (u8)(lba >> 8));
-    outb(0x1F5, (u8)(lba >> 16));
-    outb(0x1F7, 0x20);
-    if (!ata_wait_ready())
-        return 0;
-    for (i = 0; i < 256; i++)
-        buf[i] = ata_inw(0x1F0);
-    return 1;
-}
-
 static void put_hex2(u8 v)
 {
     static const char hx[] = "0123456789abcdef";
@@ -1409,50 +1348,290 @@ static void put_hex2(u8 v)
 
 static void cmd_disk(void)
 {
-    u16 id[256];
-    u16 sec[256];
+    char model[41];
+    u8 sec[512];
     u32 i, sectors;
-    if (!ata_identify(id)) {
+    if (!ata_info(model, sizeof model, &sectors)) {
         puts("диск не найден\n");
         return;
     }
-    {
-        char model[41];
-        int n = 0;
-        for (i = 27; i <= 46; i++) {
-            char a = (char)(id[i] >> 8);
-            char b = (char)(id[i] & 0xFF);
-            model[n++] = a ? a : ' ';
-            model[n++] = b ? b : ' ';
-        }
-        model[n] = 0;
-        while (n > 0 && model[n - 1] == ' ')
-            model[--n] = 0;
-        puts("Модель: ");
-        puts(model);
-        putc('\n');
-    }
-    sectors = (u32)id[60] | ((u32)id[61] << 16);
+    puts("Модель: ");
+    puts(model);
+    putc('\n');
     puts("Секторов (LBA28): ");
     putu(sectors);
     putc('\n');
-    if (!ata_read28(0, sec)) {
+    if (!ata_read_sectors(0, 1, sec)) {
         puts("чтение сектора 0 не удалось\n");
         return;
     }
     puts("Сектор 0: ");
     for (i = 0; i < 16; i++) {
-        u8 b = (u8)((i & 1) ? (sec[i / 2] >> 8) : (sec[i / 2] & 0xFF));
-        put_hex2(b);
+        put_hex2(sec[i]);
         putc(' ');
     }
     putc('\n');
     puts("ASCII:   ");
     for (i = 0; i < 16; i++) {
-        u8 b = (u8)((i & 1) ? (sec[i / 2] >> 8) : (sec[i / 2] & 0xFF));
+        u8 b = sec[i];
         putc((b >= 32 && b < 127) ? (char)b : '.');
     }
     putc('\n');
+}
+
+static int fat_mount(void)
+{
+    static int mounted;
+    if (mounted)
+        return 1;
+    if (!fat32_init())
+        return 0;
+    mounted = 1;
+    return 1;
+}
+
+static int name_eq_ci(const char *a, const char *b)
+{
+    while (*a && *b) {
+        char ca = *a, cb = *b;
+        if (ca >= 'a' && ca <= 'z')
+            ca = (char)(ca - 'a' + 'A');
+        if (cb >= 'a' && cb <= 'z')
+            cb = (char)(cb - 'a' + 'A');
+        if (ca != cb)
+            return 0;
+        a++;
+        b++;
+    }
+    return *a == 0 && *b == 0;
+}
+
+static u32 fat_lookup(u32 dir, const char *name, fat32_entry_t *out)
+{
+    fat32_entry_t ents[32];
+    int n = fat32_list_dir(dir, ents, 32), i;
+    for (i = 0; i < n; i++) {
+        if (name_eq_ci(ents[i].name, name)) {
+            if (out)
+                *out = ents[i];
+            return ents[i].first_cluster;
+        }
+    }
+    return 0;
+}
+
+/* Разбирает путь: cluster каталога-родителя и имя последнего элемента. */
+static int fat_resolve(const char *path, u32 *dir_out, char *last, int last_len)
+{
+    u32 dir = fat32_root_cluster();
+    char seg[FAT32_MAX_NAME];
+    const char *p = path;
+
+    while (*p == '/')
+        p++;
+    last[0] = 0;
+    if (!*p) {
+        *dir_out = dir;
+        return 1;
+    }
+    for (;;) {
+        int n = 0;
+        while (*p && *p != '/') {
+            if (n < FAT32_MAX_NAME - 1)
+                seg[n++] = *p;
+            p++;
+        }
+        seg[n] = 0;
+        while (*p == '/')
+            p++;
+        if (!*p) {
+            str_copy(last, seg, last_len);
+            *dir_out = dir;
+            return 1;
+        }
+        {
+            fat32_entry_t e;
+            u32 c = fat_lookup(dir, seg, &e);
+            if (!c || !e.is_dir)
+                return 0;
+            dir = c;
+        }
+    }
+}
+
+static void cmd_fat(void)
+{
+    fat32_entry_t ents[16];
+    int n;
+    if (!fat_mount()) {
+        puts("fat: раздел FAT32 не найден\n");
+        return;
+    }
+    puts("FAT32 смонтирован, корневой кластер ");
+    putu(fat32_root_cluster());
+    putc('\n');
+    n = fat32_list_dir(fat32_root_cluster(), ents, 16);
+    puts("Записей в корне: ");
+    putu((u32)n);
+    putc('\n');
+}
+
+static void cmd_fls(const char *arg)
+{
+    u32 dir, cluster;
+    char last[FAT32_MAX_NAME];
+    fat32_entry_t ents[64];
+    int n, i;
+    if (!fat_mount()) {
+        puts("fls: раздел FAT32 не найден\n");
+        return;
+    }
+    if (!fat_resolve(arg[0] ? arg : "/", &dir, last, sizeof last)) {
+        puts("fls: путь не найден\n");
+        return;
+    }
+    cluster = dir;
+    if (last[0]) {
+        cluster = fat_lookup(dir, last, 0);
+        if (!cluster) {
+            puts("fls: каталог не найден\n");
+            return;
+        }
+    }
+    n = fat32_list_dir(cluster, ents, 64);
+    for (i = 0; i < n; i++) {
+        puts(ents[i].name);
+        if (ents[i].is_dir)
+            putc('/');
+        else {
+            puts("  ");
+            putu(ents[i].size);
+        }
+        putc('\n');
+    }
+}
+
+static void cmd_fcat(const char *arg)
+{
+    u32 dir, cluster;
+    char last[FAT32_MAX_NAME];
+    fat32_entry_t e;
+    static u8 buf[4096];
+    u32 n, i;
+    if (!arg[0]) {
+        puts("fcat: usage: fcat <файл>\n");
+        return;
+    }
+    if (!fat_mount()) {
+        puts("fcat: раздел FAT32 не найден\n");
+        return;
+    }
+    if (!fat_resolve(arg, &dir, last, sizeof last) || !last[0]) {
+        puts("fcat: путь не найден\n");
+        return;
+    }
+    cluster = fat_lookup(dir, last, &e);
+    if (!cluster || e.is_dir) {
+        puts("fcat: файл не найден\n");
+        return;
+    }
+    n = fat32_read_file(cluster, e.size, buf, sizeof buf - 1);
+    buf[n] = 0;
+    for (i = 0; i < n; i++)
+        putc((buf[i] >= 32 || buf[i] == '\n' || buf[i] == '\t') ? (char)buf[i] : '.');
+    if (n && buf[n - 1] != '\n')
+        putc('\n');
+}
+
+static void cmd_fput(const char *arg)
+{
+    char path[FAT32_MAX_NAME * 2];
+    char last[FAT32_MAX_NAME];
+    const char *p = arg;
+    u32 dir, len = 0;
+    if (!take_token(&p, path, sizeof path) || !*p) {
+        puts("fput: usage: fput <файл> <текст>\n");
+        return;
+    }
+    while (*p == ' ')
+        p++;
+    if (!fat_mount()) {
+        puts("fput: раздел FAT32 не найден\n");
+        return;
+    }
+    if (!fat_resolve(path, &dir, last, sizeof last) || !last[0]) {
+        puts("fput: путь не найден\n");
+        return;
+    }
+    while (p[len])
+        len++;
+    if (fat32_write_file(dir, last, (const u8 *)p, len))
+        puts("fput: записано\n");
+    else
+        puts("fput: не удалось записать\n");
+}
+
+static void fat_selftest(int do_write)
+{
+    fat32_entry_t ents[16];
+    static u8 buf[256];
+    int n, i;
+    puts("[fat] монтирование: ");
+    if (!fat32_init()) {
+        puts("ошибка\n");
+        return;
+    }
+    puts("ok, корень ");
+    putu(fat32_root_cluster());
+    putc('\n');
+    n = fat32_list_dir(fat32_root_cluster(), ents, 16);
+    puts("[fat] записей: ");
+    putu((u32)n);
+    putc('\n');
+    for (i = 0; i < n; i++) {
+        puts("  ");
+        puts(ents[i].name);
+        if (ents[i].is_dir) {
+            putc('/');
+        } else {
+            puts("  ");
+            putu(ents[i].size);
+        }
+        putc('\n');
+    }
+    for (i = 0; i < n; i++) {
+        if (!ents[i].is_dir && ents[i].size) {
+            u32 r = fat32_read_file(ents[i].first_cluster, ents[i].size, buf, sizeof buf - 1);
+            buf[r] = 0;
+            puts("[fat] читаю ");
+            puts(ents[i].name);
+            puts(": ");
+            puts((char *)buf);
+            putc('\n');
+            break;
+        }
+    }
+    if (do_write) {
+        static const char wdata[] = "zapis iz KotOS\n";
+        u32 r;
+        puts("[fat] пишу WRITE.TXT: ");
+        if (!fat32_write_file(fat32_root_cluster(), "WRITE.TXT",
+                              (const u8 *)wdata, sizeof wdata - 1)) {
+            puts("ошибка\n");
+            return;
+        }
+        puts("ok\n");
+        r = fat_lookup(fat32_root_cluster(), "WRITE.TXT", 0);
+        if (!r) {
+            puts("[fat] WRITE.TXT не виден после записи\n");
+            return;
+        }
+        r = fat32_read_file(r, sizeof wdata - 1, buf, sizeof buf - 1);
+        buf[r] = 0;
+        puts("[fat] обратно: ");
+        puts((char *)buf);
+        putc('\n');
+    }
 }
 
 static u32 mmap_total_kb(void)
@@ -1535,6 +1714,7 @@ static void run_command(const char *cmd)
         puts("Прочее: os gui install version clear reboot halt\n");
         puts("Установка: install <gui|list>\n");
         puts("Диск/память: disk, memmap\n");
+        puts("FAT32: fat, fls, fcat, fput\n");
     } else if (streq(verb, "about")) {
         puts("KotOS — реальная ОС с собственным ядром, без Linux.\n");
     } else if (streq(verb, "os")) {
@@ -1763,6 +1943,14 @@ static void run_command(const char *cmd)
         cmd_which(arg);
     } else if (streq(verb, "sleep")) {
         cmd_sleep(arg);
+    } else if (streq(verb, "fat")) {
+        cmd_fat();
+    } else if (streq(verb, "fls")) {
+        cmd_fls(arg);
+    } else if (streq(verb, "fcat")) {
+        cmd_fcat(arg);
+    } else if (streq(verb, "fput")) {
+        cmd_fput(arg);
     } else if (streq(verb, "disk")) {
         cmd_disk();
     } else if (streq(verb, "memmap")) {
@@ -2727,6 +2915,11 @@ void kmain(void)
         console_setup(0, 0, fb_w / 8, fb_h / 16);
     }
     splash();
+
+    if (cmdline_has(cmdline, "fat=2"))
+        fat_selftest(1);
+    else if (cmdline_has(cmdline, "fat=1"))
+        fat_selftest(0);
 
     if (!cmdline_has(cmdline, "install=0") &&
         (cmdline_has(cmdline, "install=1") || cmdline_has(cmdline, "install")))
