@@ -44,12 +44,19 @@ gdt64:
 .quad 0x00CFF2000000FFFF
 .quad 0x00AFFA000000FFFF
 .quad 0
-.quad 0
+.quad 0x00CFF2000000FFFF
 .quad 0x00CFFA000000FFFF
+.quad 0x00CFF2000000FFFF
 gdt64_end:
 gdt64_ptr:
 .word gdt64_end - gdt64 - 1
 .long gdt64
+
+.section .data
+.align 8
+.global mb_info_ptr
+mb_info_ptr:
+.quad 0
 
 .section .data
 .align 8
@@ -124,6 +131,7 @@ _start:
     cli
     mov $stack_top, %esp
     cld
+    mov %ebx, mb_info_ptr
 
     mov $pml4, %edi
     xor %eax, %eax
@@ -517,10 +525,11 @@ after_compat:
     call puts64
 
     lea payload_start(%rip), %rsi
-    movl $0x200000, %edi
+    movl $0x300000, %edi
     movl $(payload_end - payload_start), %ecx
     rep movsb
-    movl $0x200000, %eax
+    movl mb_info_ptr(%rip), %edi
+    movl $0x300000, %eax
     call *%rax
 1:
     hlt

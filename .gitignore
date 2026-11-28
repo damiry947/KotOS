@@ -45,3 +45,14 @@ kernel64/payload/payload.elf
 kernel64/payload.bin
 kernel64/test64.*
 kernel64/linker64.ld
+
+# ISO и его содержимое
+kotos.iso
+iso/boot/*.elf
+
+# тестовые Linux-бинарники x64
+kernel64/*.elf
+
+# мусор
+a.out
+rem.txt

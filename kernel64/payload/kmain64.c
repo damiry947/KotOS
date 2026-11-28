@@ -3,6 +3,7 @@
 typedef unsigned char u8;
 typedef unsigned short u16;
 typedef unsigned int u32;
+typedef unsigned long u64;
 
 static inline void outb(u16 p, u8 v) { __asm__ volatile("outb %0, %1" : : "a"(v), "Nd"(p)); }
 static inline u8 inb(u16 p) { u8 r; __asm__ volatile("inb %1, %0" : "=a"(r) : "Nd"(p)); return r; }
@@ -37,6 +38,9 @@ static void draw_terminal_cells(void);
 static void cursor_draw(void);
 static void cursor_erase(void);
 static u8 cp866(u32 cp);
+
+extern void linuxabi_init(u64 mb_info);
+extern int linuxabi_exec(void);
 
 static void serial_init(void)
 {
@@ -592,12 +596,14 @@ static void run_cmd(const char *s)
     if (!have)
         return;
     if (streq(v, "help")) {
-        puts_c("Команды: help, about, clear, look, newfile, show, del,\n");
+        puts_c("Команды: help, about, clear, look, newfile, show, del, linux,\n");
         puts_c("         say <текст> > <файл>, say <текст> >> <файл>\n");
     } else if (streq(v, "about")) {
         puts_c("KotOS x64 — 64-битное ядро, C payload + RAMFS.\n");
     } else if (streq(v, "clear")) {
         clear_screen();
+    } else if (streq(v, "linux") || streq(v, "exec")) {
+        linuxabi_exec();
     } else if (streq(v, "look")) {
         fs_look();
     } else if (streq(v, "newfile")) {
@@ -656,18 +662,71 @@ static void run_cmd(const char *s)
     }
 }
 
-void kmain64(void)
+static unsigned long mb_info_addr;
+
+void kputc(u8 c) { putc_c(c); }
+void kputs(const char *s) { puts_c(s); }
+void kserial_char(char c) { sport(c); }
+
+static void print_modules(void)
+{
+    u32 *mbi = (u32 *)mb_info_addr;
+    u32 count, addr, i;
+    if (!mbi) {
+        puts_c("mb: no info\n");
+        return;
+    }
+    count = mbi[5];
+    addr = mbi[6];
+    puts_c("mb modules: ");
+    putc_c((u8)('0' + count));
+    puts_c("\n");
+    for (i = 0; i < count && i < 8; i++) {
+        u32 *m = (u32 *)(unsigned long)addr;
+        u32 st = m[0], en = m[1];
+        puts_c("  mod ");
+        putc_c((u8)('0' + i));
+        puts_c(": ");
+        puts_c("0x");
+        {
+            char hx[9];
+            int k;
+            for (k = 0; k < 8; k++)
+                hx[k] = "0123456789ABCDEF"[(st >> (28 - k * 4)) & 15];
+            hx[8] = 0;
+            puts_c(hx);
+        }
+        puts_c("-0x");
+        {
+            char hx[9];
+            int k;
+            for (k = 0; k < 8; k++)
+                hx[k] = "0123456789ABCDEF"[(en >> (28 - k * 4)) & 15];
+            hx[8] = 0;
+            puts_c(hx);
+        }
+        puts_c("\n");
+        addr += 16;
+    }
+}
+
+void kmain64(unsigned long mb_info)
 {
     char line[64];
+
+    mb_info_addr = mb_info;
     int n = 0;
     int c;
 
     serial_init();
     fs_init();
+    linuxabi_init((u64)mb_info);
     if (!fb_init()) {
         puts_c("KotOS x64: VBE unavailable\n");
         for (;;) __asm__ volatile("hlt");
     }
+    outb(0x21, 0xFF);
+    outb(0xA1, 0xFF);
     mouse_init();
     clear_screen();
     draw_scene();
@@ -676,6 +735,7 @@ void kmain64(void)
     puts_c("KotOS x64\n");
     puts_c("Framebuffer console works\n");
     puts_c("Консоль x64 работает\n\n");
+    print_modules();
     puts_c("Введите help.\n\n");
     puts_c("x64> ");
 
@@ -785,9 +845,9 @@ void kmain64(void)
 }
 
 __attribute__((section(".text.entry"), noreturn))
-void start64(void)
+void start64(unsigned long mb_info)
 {
-    kmain64();
+    kmain64(mb_info);
     for (;;)
         __asm__ volatile("hlt");
 }
