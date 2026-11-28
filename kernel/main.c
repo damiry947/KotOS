@@ -178,6 +178,7 @@ static void splash(void);
 static void run_user(void);
 static int gfx_init(void);
 static void gui_run(void);
+static void gui_start(void);
 
 static int streq(const char *a, const char *b)
 {
@@ -292,6 +293,38 @@ static char hist[8][64];
 static int hist_n = 0;
 static u32 boot_sec = 0;
 static u32 mem_upper_kb;
+
+#define KOTOS_VERSION "1.0"
+#define CFG_FILE "kotos.conf"
+#define CFG_CITY_MAX 24
+
+typedef struct {
+    const char *name;
+    int offset;
+} tz_city;
+
+static const tz_city tz_cities[] = {
+    { "Калининград", 120 },
+    { "Москва", 180 },
+    { "Самара", 240 },
+    { "Екатеринбург", 300 },
+    { "Омск", 360 },
+    { "Красноярск", 420 },
+    { "Иркутск", 480 },
+    { "Якутск", 540 },
+    { "Владивосток", 600 },
+    { "Магадан", 660 },
+    { "Петропавловск-Камчатский", 720 },
+};
+#define TZ_CITY_COUNT ((int)(sizeof(tz_cities) / sizeof(tz_cities[0])))
+
+static int tz_offset_min = 180;
+static char cfg_city[CFG_CITY_MAX] = "Москва";
+static int cfg_mode = 0;
+static int cfg_installed = 0;
+
+static void local_time(int *h, int *m, int *s, int *dshift);
+static u32 read_time_secs(void);
 
 static char line[128];
 static int line_len = 0;
@@ -714,14 +747,181 @@ static void print2(u32 v)
     putc((char)('0' + v % 10));
 }
 
+static u8 days_in_month(u8 mon, u8 year)
+{
+    static const u8 dim[12] = { 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31 };
+    if (mon < 1 || mon > 12)
+        return 31;
+    if (mon == 2 && ((year % 4 == 0 && year % 100 != 0) || year % 400 == 0))
+        return 29;
+    return dim[mon - 1];
+}
+
+static void local_time(int *h, int *m, int *s, int *dshift)
+{
+    int t = (int)read_time_secs() + tz_offset_min * 60;
+    int ds = 0;
+    while (t < 0) {
+        t += 86400;
+        ds--;
+    }
+    while (t >= 86400) {
+        t -= 86400;
+        ds++;
+    }
+    *h = t / 3600;
+    *m = (t / 60) % 60;
+    *s = t % 60;
+    *dshift = ds;
+}
+
+static void tz_label(char *out, int max)
+{
+    int off = tz_offset_min, a = off < 0 ? -off : off, i = 0;
+    if (off < 0 && i < max - 1)
+        out[i++] = '-';
+    else if (i < max - 1)
+        out[i++] = '+';
+    out[i++] = (char)('0' + (a / 60) / 10);
+    out[i++] = (char)('0' + (a / 60) % 10);
+    out[i++] = ':';
+    out[i++] = (char)('0' + (a % 60) / 10);
+    out[i++] = (char)('0' + (a % 60) % 10);
+    out[i] = 0;
+}
+
+static int cfg_put(char *buf, int pos, const char *s, int max)
+{
+    while (*s && pos < max - 1)
+        buf[pos++] = *s++;
+    buf[pos] = 0;
+    return pos;
+}
+
+static int cfg_put_int(char *buf, int pos, int v, int max)
+{
+    char tmp[12];
+    int n = 0, i;
+    if (v < 0) {
+        if (pos < max - 1)
+            buf[pos++] = '-';
+        v = -v;
+    }
+    if (!v)
+        tmp[n++] = '0';
+    while (v && n < 11) {
+        tmp[n++] = (char)('0' + v % 10);
+        v /= 10;
+    }
+    for (i = n - 1; i >= 0 && pos < max - 1; i--)
+        buf[pos++] = tmp[i];
+    buf[pos] = 0;
+    return pos;
+}
+
+static void config_save(void)
+{
+    char buf[128];
+    int pos = 0, saved = cwd;
+    pos = cfg_put(buf, pos, "mode=", sizeof(buf));
+    pos = cfg_put_int(buf, pos, cfg_mode, sizeof(buf));
+    pos = cfg_put(buf, pos, "\ncity=", sizeof(buf));
+    pos = cfg_put(buf, pos, cfg_city, sizeof(buf));
+    pos = cfg_put(buf, pos, "\nutc=", sizeof(buf));
+    cfg_put_int(buf, pos, tz_offset_min, sizeof(buf));
+    cwd = 0;
+    fs_write(CFG_FILE, buf);
+    cwd = saved;
+}
+
+static const char *cfg_skip_digits(const char *p, int *out)
+{
+    int v = 0, sign = 1;
+    if (*p == '-') {
+        sign = -1;
+        p++;
+    } else if (*p == '+') {
+        p++;
+    }
+    if (*p < '0' || *p > '9')
+        return 0;
+    while (*p >= '0' && *p <= '9') {
+        v = v * 10 + (*p - '0');
+        p++;
+    }
+    *out = v * sign;
+    return p;
+}
+
+static void config_load(void)
+{
+    int idx = fs_find(0, CFG_FILE);
+    const char *p;
+    if (idx <= 0)
+        return;
+    p = fs[idx].data;
+    while (*p) {
+        if (p[0] == 'm' && p[1] == 'o' && p[2] == 'd' && p[3] == 'e' && p[4] == '=') {
+            int v = 0;
+            p = cfg_skip_digits(p + 5, &v);
+            if (p)
+                cfg_mode = v ? 1 : 0;
+        } else if (p[0] == 'c' && p[1] == 'i' && p[2] == 't' && p[3] == 'y' && p[4] == '=') {
+            int n = 0;
+            p += 5;
+            while (*p && *p != '\n' && n < CFG_CITY_MAX - 1)
+                cfg_city[n++] = *p++;
+            cfg_city[n] = 0;
+        } else if (p[0] == 'u' && p[1] == 't' && p[2] == 'c' && p[3] == '=') {
+            int v = 0;
+            p = cfg_skip_digits(p + 4, &v);
+            if (p && v >= -720 && v <= 840)
+                tz_offset_min = v;
+            else if (!p)
+                break;
+        }
+        while (*p && *p != '\n')
+            p++;
+        if (*p == '\n')
+            p++;
+        if (!p)
+            break;
+    }
+    cfg_installed = 1;
+}
+
 static void cmd_clock(void)
 {
-    u8 sec = cmos_read(0x00), min = cmos_read(0x02), hour = cmos_read(0x04);
     u8 day = cmos_read(0x07), mon = cmos_read(0x08), year = cmos_read(0x09);
     u8 b = cmos_read(0x0B);
+    int h, min, sec, ds;
+    char lbl[8];
     if (!(b & 0x04)) {
-        sec = from_bcd(sec); min = from_bcd(min); hour = from_bcd(hour);
         day = from_bcd(day); mon = from_bcd(mon); year = from_bcd(year);
+    }
+    local_time(&h, &min, &sec, &ds);
+    while (ds > 0) {
+        day++;
+        if (day > days_in_month(mon, year)) {
+            day = 1;
+            mon++;
+            if (mon > 12) {
+                mon = 1;
+                year++;
+            }
+        }
+        ds--;
+    }
+    while (ds < 0) {
+        if (day > 1) {
+            day--;
+        } else {
+            mon = mon ? (u8)(mon - 1) : 12;
+            day = days_in_month(mon, year);
+            if (mon == 12)
+                year--;
+        }
+        ds++;
     }
     puts("20");
     print2(year);
@@ -730,11 +930,16 @@ static void cmd_clock(void)
     putc('-');
     print2(day);
     putc(' ');
-    print2(hour);
+    print2((u32)h);
     putc(':');
-    print2(min);
+    print2((u32)min);
     putc(':');
-    print2(sec);
+    print2((u32)sec);
+    puts(" UTC");
+    tz_label(lbl, 8);
+    puts(lbl);
+    putc(' ');
+    puts(cfg_city);
     putc('\n');
 }
 
@@ -934,7 +1139,7 @@ static const char *const known_cmds[] = {
     "hostname", "me", "id", "ok", "true", "nope", "false", "mem",
     "free", "sysinfo", "uname", "who", "whoami", "history", "which",
     "sleep", "user", "userspace", "exit", "poweroff",
-    "disk", "memmap", 0
+    "disk", "memmap", "tz", "timezone", 0
 };
 
 static void cmd_which(const char *name)
@@ -948,6 +1153,175 @@ static void cmd_which(const char *name)
         }
     }
     puts("which: not found\n");
+}
+
+static int console_readline(char *buf, int max)
+{
+    int n = 0;
+    for (;;) {
+        char c = kbd_getc();
+        if (c == '\n' || c == '\r') {
+            putc('\n');
+            buf[n] = 0;
+            return n;
+        }
+        if (c == '\b') {
+            if (n) {
+                n--;
+                putc('\b');
+            }
+            continue;
+        }
+        if (c >= ' ' && c < 127 && n < max - 1) {
+            buf[n++] = c;
+            putc(c);
+        }
+    }
+}
+
+static void show_settings(void)
+{
+    char lbl[8];
+    tz_label(lbl, 8);
+    puts("  режим: ");
+    puts(cfg_mode ? "графический" : "терминальный");
+    puts("\n  город: ");
+    puts(cfg_city);
+    puts("\n  UTC:   ");
+    puts(lbl);
+    puts(" (");
+    putu((u32)(tz_offset_min < 0 ? -tz_offset_min : tz_offset_min));
+    puts(tz_offset_min < 0 ? " мин назад)\n" : " мин)\n");
+    puts("  конфиг: /");
+    puts(CFG_FILE);
+    puts(cfg_installed ? " (установлено)\n" : " (по умолчанию)\n");
+}
+
+static void print_cities(void)
+{
+    int i;
+    for (i = 0; i < TZ_CITY_COUNT; i++) {
+        char lbl[8];
+        int saved = tz_offset_min;
+        tz_offset_min = tz_cities[i].offset;
+        tz_label(lbl, 8);
+        tz_offset_min = saved;
+        puts("  ");
+        putu((u32)(i + 1));
+        puts(") ");
+        puts(tz_cities[i].name);
+        puts("  UTC");
+        puts(lbl);
+        putc('\n');
+    }
+}
+
+static void installer(void)
+{
+    char buf[32];
+    int choice;
+
+    puts("\n=== Установка KotOS " KOTOS_VERSION " ===\n");
+    puts("Режим запуска:\n  1) терминал\n  2) графический интерфейс\n");
+    puts("Выбор [1/2]: ");
+    console_readline(buf, sizeof(buf));
+    cfg_mode = (buf[0] == '2') ? 1 : 0;
+
+    puts("\nГород (часовой пояс):\n");
+    print_cities();
+    puts("Номер города [1-");
+    putu((u32)TZ_CITY_COUNT);
+    puts("], Enter — Москва, 0 — ввести UTC вручную: ");
+    console_readline(buf, sizeof(buf));
+    choice = (int)parse_num(buf);
+    if (choice >= 1 && choice <= TZ_CITY_COUNT) {
+        tz_offset_min = tz_cities[choice - 1].offset;
+        str_copy(cfg_city, tz_cities[choice - 1].name, CFG_CITY_MAX);
+    } else if (choice == 0 && buf[0] == '0') {
+        int v;
+        puts("Смещение UTC в минутах, например 180 или -300: ");
+        console_readline(buf, sizeof(buf));
+        if (cfg_skip_digits(buf, &v) && v >= -720 && v <= 840) {
+            tz_offset_min = v;
+            str_copy(cfg_city, "UTC вручную", CFG_CITY_MAX);
+        } else {
+            puts("Некорректное значение, оставляю текущее.\n");
+        }
+    }
+
+    puts("\nПроверьте настройки:\n");
+    show_settings();
+    puts("Записать и продолжить? [Y/n]: ");
+    console_readline(buf, sizeof(buf));
+    if (buf[0] == 'n' || buf[0] == 'N') {
+        puts("Установка отменена, настройки не изменены.\n");
+        return;
+    }
+    cfg_installed = 1;
+    config_save();
+    puts("\nГотово. Настройки сохранены в RAMFS (/");
+    puts(CFG_FILE);
+    puts(").\n");
+    puts("Они действуют до перезагрузки: диск пока только читается.\n");
+    if (cfg_mode) {
+        puts("Запускаю графический интерфейс...\n");
+        gui_start();
+    } else {
+        puts("Дальше — терминал. Команда gui запустит графику вручную.\n");
+    }
+}
+
+static void cmd_tz(const char *arg)
+{
+    int i, v;
+    while (*arg == ' ')
+        arg++;
+    if (!*arg) {
+        show_settings();
+        return;
+    }
+    if (*arg == '+' || *arg == '-' || (*arg >= '0' && *arg <= '9')) {
+        const char *p;
+        int sign = 1, h = 0, m = 0;
+        p = arg;
+        if (*p == '-') {
+            sign = -1;
+            p++;
+        } else if (*p == '+') {
+            p++;
+        }
+        if (*p < '0' || *p > '9') {
+            puts("tz: формат +HH:MM или +HH\n");
+            return;
+        }
+        h = (int)parse_num(p);
+        while (*p >= '0' && *p <= '9')
+            p++;
+        if (*p == ':')
+            m = (int)parse_num(p + 1);
+        v = sign * (h * 60 + m);
+    } else {
+        for (i = 0; i < TZ_CITY_COUNT; i++) {
+            if (streq(tz_cities[i].name, arg)) {
+                v = tz_cities[i].offset;
+                str_copy(cfg_city, tz_cities[i].name, CFG_CITY_MAX);
+                tz_offset_min = v;
+                config_save();
+                show_settings();
+                return;
+            }
+        }
+        puts("tz: неизвестный город\n");
+        return;
+    }
+    if (v < -720 || v > 840) {
+        puts("tz: смещение вне диапазона -12:00..+14:00\n");
+        return;
+    }
+    tz_offset_min = v;
+    str_copy(cfg_city, "UTC вручную", CFG_CITY_MAX);
+    config_save();
+    show_settings();
 }
 
 static void gui_start(void)
@@ -1171,20 +1545,40 @@ static void run_command(const char *cmd)
         char sub[FS_NAME];
         const char *ap = arg;
         int have = take_token(&ap, sub, FS_NAME);
-        if (!have || streq(sub, "list")) {
+        if (!have) {
+            installer();
+        } else if (streq(sub, "list") || streq(sub, "status")) {
             puts("Компоненты:\n  gui  [");
             puts(gui_installed ? "установлен" : "не установлен");
-            puts("]\n");
+            puts("]\nНастройки:\n");
+            show_settings();
         } else if (streq(sub, "gui")) {
+            cfg_mode = 1;
+            cfg_installed = 1;
+            config_save();
             gui_start();
+        } else if (streq(sub, "text")) {
+            cfg_mode = 0;
+            cfg_installed = 1;
+            config_save();
+            puts("Режим запуска: терминал\n");
+        } else if (streq(sub, "reset")) {
+            cfg_mode = 0;
+            cfg_installed = 0;
+            tz_offset_min = 180;
+            str_copy(cfg_city, "Москва", CFG_CITY_MAX);
+            config_save();
+            puts("Настройки сброшены.\n");
         } else {
             puts("Неизвестный компонент: ");
             puts(sub);
             putc('\n');
-            puts("Использование: install <gui|list>\n");
+            puts("Использование: install [gui|text|list|status|reset]\n");
         }
+    } else if (streq(verb, "tz") || streq(verb, "timezone")) {
+        cmd_tz(arg);
     } else if (streq(verb, "version")) {
-        puts("KotOS 1.0, собственное ядро (x86, Multiboot)\n");
+        puts("KotOS " KOTOS_VERSION ", собственное ядро (x86, Multiboot), сборка " __DATE__ "\n");
     } else if (streq(verb, "clear")) {
         vga_clear();
     } else if (streq(verb, "reboot")) {
@@ -1857,15 +2251,13 @@ static void focus(int i)
 
 static void draw_clock(void)
 {
-    u8 h = cmos_read(0x04), m = cmos_read(0x02), sec = cmos_read(0x00);
-    u8 b = cmos_read(0x0B);
+    int h, m, s, ds;
     char t[9];
-    if (!(b & 0x04)) {
-        h = from_bcd(h); m = from_bcd(m); sec = from_bcd(sec);
-    }
+    local_time(&h, &m, &s, &ds);
+    (void)ds;
     t[0] = (char)('0' + h / 10); t[1] = (char)('0' + h % 10); t[2] = ':';
     t[3] = (char)('0' + m / 10); t[4] = (char)('0' + m % 10); t[5] = ':';
-    t[6] = (char)('0' + sec / 10); t[7] = (char)('0' + sec % 10); t[8] = 0;
+    t[6] = (char)('0' + s / 10); t[7] = (char)('0' + s % 10); t[8] = 0;
     rect(fb_w - 96, 4, 88, 28, 0x141C26);
     draw_text(fb_w - 88, 10, t, 0x9FB3C8, 0x141C26);
 }
@@ -2058,6 +2450,27 @@ static void gui_run(void)
 
 extern u32 mb_magic;
 extern u32 mb_info;
+
+static int cmdline_has(const char *cmd, const char *key)
+{
+    int klen = 0;
+    if (!cmd)
+        return 0;
+    while (key[klen])
+        klen++;
+    while (*cmd) {
+        int i = 0;
+        while (*cmd == ' ')
+            cmd++;
+        while (i < klen && cmd[i] == key[i])
+            i++;
+        if (i == klen && (cmd[i] == 0 || cmd[i] == ' '))
+            return 1;
+        while (*cmd && *cmd != ' ')
+            cmd++;
+    }
+    return 0;
+}
 
 static void puthex(u32 v)
 {
@@ -2258,6 +2671,7 @@ static void run_user(void)
 
 void kmain(void)
 {
+    const char *cmdline = 0;
     serial_init();
     puts("MB magic: ");
     puthex(mb_magic);
@@ -2268,6 +2682,13 @@ void kmain(void)
         puts("MB flags: ");
         puthex(flags);
         putc('\n');
+        if (flags & 0x4)
+            cmdline = (const char *)(*(volatile u32 *)(mb_info + 16));
+        if (cmdline && *cmdline) {
+            puts("cmdline: ");
+            puts(cmdline);
+            putc('\n');
+        }
         if (flags & 0x1000) {
             u32 pitch = *(volatile u32 *)(mb_info + 96);
             u32 w = *(volatile u32 *)(mb_info + 100);
@@ -2294,6 +2715,7 @@ void kmain(void)
     vga_clear();
 
     fs_init();
+    config_load();
     boot_sec = read_time_secs();
     if (mb_info)
         mem_upper_kb = *(volatile u32 *)(mb_info + 8);
@@ -2305,6 +2727,17 @@ void kmain(void)
         console_setup(0, 0, fb_w / 8, fb_h / 16);
     }
     splash();
+
+    if (!cmdline_has(cmdline, "install=0") &&
+        (cmdline_has(cmdline, "install=1") || cmdline_has(cmdline, "install")))
+        installer();
+
+    if (!cmdline_has(cmdline, "gui=0") &&
+        (cmdline_has(cmdline, "gui=1") || (cfg_installed && cfg_mode == 1))) {
+        gui_start();
+        return;
+    }
+
     puts("Введите help для списка команд.\n\n");
     prompt();
 

@@ -1,5 +1,5 @@
 .set MB_MAGIC, 0x1BADB002
-.set MB_FLAGS, 0x00000007
+.set MB_FLAGS, 0x00000003
 .set MB_CHECKSUM, -(MB_MAGIC + MB_FLAGS)
 
 .section .multiboot, "a"
